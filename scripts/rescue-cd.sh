@@ -1,11 +1,14 @@
 #!/bin/bash
-# rescue-cd.sh — hardened with config, safer paths, verification, resume, plan mode, etc.
-# Clone ON by default. Compatible with macOS bash 3.2.
+# rescue-cd.sh — engineering pass
+# Clone ON by default. macOS bash 3.2 compatible.
 #
-# Usage: scripts/rescue-cd.sh [options] [src-dir] [name]
+# Usage: scripts/rescue-cd.sh [options] [src] [name]
 #
 # Options:
-#   --go --plan --no-clone --sanitize --export-modern --notify etc.
+#   --go --plan --no-clone --sanitize --export-modern --notify
+#   --verify          SHA-256 every keepers file into verification.json
+#   --convert-fonts   copy font files into modern/fonts (stub)
+#   --no-heuristics
 # Config: ~/.starmax.toml or ~/.starmax.conf
 
 set -euo pipefail
@@ -24,11 +27,12 @@ CONVERT_PICT=0
 EXTRACT_SIT=0
 CONVERT_FONTS=0
 HEURISTICS=1
+VERIFY=0
 NOTIFY=${STARMAX_NOTIFY:-0}
 EXTRA_KEEP=""
 EXTRA_JUNK=""
 
-usage() { sed -n '2,12p' "$0" | sed 's/^# //'; exit 0; }
+usage() { sed -n '2,18p' "$0" | sed 's/^# //'; exit 0; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -41,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     --extract-sit) EXTRACT_SIT=1; shift ;;
     --convert-fonts) CONVERT_FONTS=1; shift ;;
     --no-heuristics) HEURISTICS=0; shift ;;
+    --verify) VERIFY=1; shift ;;
     --notify) NOTIFY=1; shift ;;
     -s|--src) SRC="$2"; shift 2 ;;
     -n|--name) NAME="$2"; shift 2 ;;
@@ -69,10 +74,21 @@ MODERN="$DEST/modern"
 LOG="$DEST/rescue.log"
 STATE="$DEST/state.json"
 PLAN_FILE="$DEST/plan.json"
-VERIFY="$DEST/verification.json"
+VERIFY_FILE="$DEST/verification.json"
+FONTS_JSON="$DEST/fonts.json"
+FONTS_MD="$DEST/fonts.md"
+RESOURCE_JSON="$DEST/resource-forks.json"
 
 [[ -d "$SRC" ]] || { echo "Source not found: $SRC"; exit 1; }
 mkdir -p "$DEST"
+
+# Config dump
+echo "=== Effective config ==="
+echo "device: ${STARMAX_DEVICE:-none}"
+echo "keep_patterns: ${STARMAX_KEEP_PATTERNS:-none}"
+echo "junk: ${STARMAX_JUNK:-none}"
+echo "thresholds: qxd=${STARMAX_QXD_THRESHOLD:-1} images=${STARMAX_IMAGE_THRESHOLD:-5} fonts=${STARMAX_FONT_THRESHOLD:-2}"
+echo "notify: $NOTIFY"
 
 log_json() {
   local level="$1" msg="$2"
@@ -83,31 +99,86 @@ log_json() {
 exec > >(tee -a "$LOG") 2>&1
 log_json info "start name=$NAME src=$SRC mode=$([[ $GO -eq 1 ]] && echo live || echo dry) plan=$PLAN"
 
+# Shared classification function for plan + live
+classify_item() {
+  local base="$1"
+  local qxd=0 fonts=0 images=0
+  if [[ -d "$SRC/$base" ]]; then
+    qxd=$(find "$SRC/$base" -type f -iname '*.qxd' 2>/dev/null | wc -l | tr -d ' ')
+    fonts=$(find "$SRC/$base" -type f \( -iname '*.suit' -o -iname '*.dfont' -o -iname '*.bmap' -o -iname '*.ttf' -o -iname '*.otf' \) 2>/dev/null | wc -l | tr -d ' ')
+    images=$(find "$SRC/$base" -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.pict' -o -iname '*.pct' -o -iname '*.tiff' -o -iname '*.tif' -o -iname '*.gif' \) 2>/dev/null | wc -l | tr -d ' ')
+  fi
+  local action="review" reason="default"
+  # patterns
+  local matched=0
+  for pat in "${KEEP_PATTERNS[@]:-}"; do
+    # shellcheck disable=SC2254
+    case "$base" in $pat) action="keepers"; reason="pattern:$pat"; matched=1; break ;; esac
+  done
+  if [[ $matched -eq 0 && $HEURISTICS -eq 1 ]]; then
+    if [[ "$qxd" -ge ${STARMAX_QXD_THRESHOLD:-1} || "$fonts" -ge ${STARMAX_FONT_THRESHOLD:-2} || "$images" -ge ${STARMAX_IMAGE_THRESHOLD:-5} ]]; then
+      action="keepers"
+      reason="qxd=$qxd fonts=$fonts images=$images"
+    fi
+  fi
+  # explicit junk
+  for j in "${junk_names[@]:-}"; do
+    [[ "$base" == "$j" ]] && action="_junk" && reason="explicit junk" && break
+  done
+  [[ "$base" == "Fonts" ]] && action="keepers" && reason="explicit Fonts"
+  [[ "$base" == "Applications" ]] && action="_review" && reason="explicit Applications"
+  echo "$action|$reason"
+}
+
+# Load patterns / junk early (needed for plan)
+KEEP_PATTERNS=()
+IFS=',' read -ra pats <<< "${STARMAX_KEEP_PATTERNS:-},${EXTRA_KEEP:-}"
+for p in "${pats[@]}"; do [[ -n "$p" ]] && KEEP_PATTERNS+=("$p"); done
+if [[ -f "$HOME/.starmax-keep" ]]; then
+  while IFS= read -r line; do [[ -n "$line" && ! "$line" =~ ^# ]] && KEEP_PATTERNS+=("$line"); done < "$HOME/.starmax-keep"
+fi
+
+junk_names=( "Desktop DB" "Desktop DF" "Preferences" "Previous System Folder" "Extensions" "System Folder" )
+IFS=',' read -ra ej <<< "${STARMAX_JUNK:-},${EXTRA_JUNK:-}"
+for x in "${ej[@]}"; do [[ -n "$x" ]] && junk_names+=("$x"); done
+
+# --- Accurate plan mode ---
 if [[ $PLAN -eq 1 ]]; then
   python3 - "$SRC" "$PLAN_FILE" "$NAME" <<'PY'
-import os, sys, json, time
-from pathlib import Path
+import sys, json, time, subprocess, os
 src, out, name = sys.argv[1:4]
 plan = {"name": name, "generated": int(time.time()), "actions": []}
-for entry in Path(src).iterdir():
-    if not entry.is_dir() and not entry.is_file(): continue
-    base = entry.name
-    if base in ("keepers", "_junk", "_review", "full-extract"): continue
-    qxd = sum(1 for _ in entry.rglob("*.qxd")) if entry.is_dir() else 0
-    images = sum(1 for p in entry.rglob("*") if p.suffix.lower() in {".jpg",".jpeg",".pict",".pct",".tiff",".tif",".gif"}) if entry.is_dir() else 0
-    action = "review"
-    reason = "default"
-    if qxd >= 1 or images >= 5:
-        action = "keepers"
-        reason = f"qxd={qxd} images={images}"
-    plan["actions"].append({"item": base, "action": action, "reason": reason})
-with open(out, "w") as f: json.dump(plan, f, indent=2)
-print(f"Plan written: {out} ({len(plan['actions'])} items)")
+for entry in os.listdir(src):
+    if entry.startswith('.') or entry in ("keepers","_junk","_review","full-extract","modern"): continue
+    # call bash classify via env for simplicity; here we reimplement lightly
+    plan["actions"].append({"item": entry, "action": "review", "reason": "see live run for exact"})
+with open(out,"w") as f: json.dump(plan, f, indent=2)
+print(f"Plan written (sketch; live uses full classify): {out}")
 PY
-  log_json info "plan written"
+  # Better: emit real plan from bash
+  : > "$PLAN_FILE.tmp"
+  echo "{" > "$PLAN_FILE"
+  echo "  \"name\": \"$NAME\"," >> "$PLAN_FILE"
+  echo "  \"generated\": $(date +%s)," >> "$PLAN_FILE"
+  echo "  \"actions\": [" >> "$PLAN_FILE"
+  first=1
+  while IFS= read -r -d '' entry; do
+    base=$(basename "$entry")
+    result=$(classify_item "$base")
+    action=${result%%|*}
+    reason=${result#*|}
+    [[ $first -eq 1 ]] && first=0 || echo "," >> "$PLAN_FILE"
+    printf '    {"item":"%s","action":"%s","reason":"%s"}' "$base" "$action" "$reason" >> "$PLAN_FILE"
+  done < <(find "$SRC" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+  echo "" >> "$PLAN_FILE"
+  echo "  ]" >> "$PLAN_FILE"
+  echo "}" >> "$PLAN_FILE"
+  log_json info "accurate plan written"
+  echo "Plan: $PLAN_FILE"
   exit 0
 fi
 
+# Sanitize (skip root)
 if [[ $SANITIZE -eq 1 && $GO -eq 1 ]]; then
   log_json info "sanitize start"
   find "$SRC" -mindepth 1 -depth -print0 2>/dev/null | while IFS= read -r -d '' p; do
@@ -120,6 +191,7 @@ if [[ $SANITIZE -eq 1 && $GO -eq 1 ]]; then
   done || true
 fi
 
+# Clone
 if [[ $CLONE -eq 1 ]]; then
   if [[ $GO -eq 1 ]]; then
     if [[ -d "$CLONE_DEST" ]]; then
@@ -132,17 +204,6 @@ if [[ $CLONE -eq 1 ]]; then
     log_json info "would clone to full-extract"
   fi
 fi
-
-KEEP_PATTERNS=()
-IFS=',' read -ra pats <<< "${STARMAX_KEEP_PATTERNS:-},${EXTRA_KEEP:-}"
-for p in "${pats[@]}"; do [[ -n "$p" ]] && KEEP_PATTERNS+=("$p"); done
-if [[ -f "$HOME/.starmax-keep" ]]; then
-  while IFS= read -r line; do [[ -n "$line" && ! "$line" =~ ^# ]] && KEEP_PATTERNS+=("$line"); done < "$HOME/.starmax-keep"
-fi
-
-junk_names=( "Desktop DB" "Desktop DF" "Preferences" "Previous System Folder" "Extensions" "System Folder" )
-IFS=',' read -ra ej <<< "${STARMAX_JUNK:-},${EXTRA_JUNK:-}"
-for x in "${ej[@]}"; do [[ -n "$x" ]] && junk_names+=("$x"); done
 
 do_move() {
   local item="$1" dest="$2"
@@ -161,34 +222,39 @@ do_move() {
   return 0
 }
 
-for i in "Fonts"; do do_move "$i" "$KEEP" || true; done
-for i in "${junk_names[@]}"; do do_move "$i" "$JUNK" || true; done
-for i in "Applications"; do do_move "$i" "$REVIEW" || true; done
-
+# Classification using shared function
 while IFS= read -r -d '' entry; do
   base=$(basename "$entry")
   [[ "$base" == keepers || "$base" == _junk || "$base" == _review || "$base" == full-extract || "$base" == modern ]] && continue
-  for pat in "${KEEP_PATTERNS[@]}"; do
-    # shellcheck disable=SC2254
-    case "$base" in $pat) do_move "$base" "$KEEP" || true; continue 2 ;; esac
-  done
-  if [[ $HEURISTICS -eq 1 ]]; then
-    qxd=$(find "$SRC/$base" -type f -iname '*.qxd' 2>/dev/null | wc -l | tr -d ' ')
-    fonts=$(find "$SRC/$base" -type f \( -iname '*.suit' -o -iname '*.dfont' -o -iname '*.bmap' -o -iname '*.ttf' \) 2>/dev/null | wc -l | tr -d ' ')
-    images=$(find "$SRC/$base" -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.pict' -o -iname '*.pct' -o -iname '*.tiff' -o -iname '*.tif' -o -iname '*.gif' \) 2>/dev/null | wc -l | tr -d ' ')
-    if [[ "$qxd" -ge ${STARMAX_QXD_THRESHOLD:-1} || "$fonts" -ge ${STARMAX_FONT_THRESHOLD:-2} || "$images" -ge ${STARMAX_IMAGE_THRESHOLD:-5} ]]; then
-      do_move "$base" "$KEEP" || true
-      log_json info "heuristic keepers $base qxd=$qxd fonts=$fonts images=$images"
-      continue
-    fi
-  fi
-  do_move "$base" "$REVIEW" || true
+  result=$(classify_item "$base")
+  action=${result%%|*}
+  reason=${result#*|}
+  case "$action" in
+    keepers) do_move "$base" "$KEEP" || true; log_json info "classified keepers $base ($reason)" ;;
+    _junk)   do_move "$base" "$JUNK" || true ;;
+    *)       do_move "$base" "$REVIEW" || true ;;
+  esac
 done < <(find "$SRC" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
 
 [[ $GO -eq 0 ]] && { log_json info "dry-run complete"; exit 0; }
 
 mkdir -p "$KEEP"
 
+# Resource-fork / AppleDouble report
+log_json info "resource-fork scan"
+python3 - "$KEEP" "$RESOURCE_JSON" <<'PY' || true
+import os, sys, json
+from pathlib import Path
+keep, out = sys.argv[1:3]
+entries = []
+for p in Path(keep).rglob("*"):
+    if p.name.startswith("._") or p.name == ".DS_Store":
+        entries.append({"path": str(p.relative_to(keep)), "type": "appledouble" if p.name.startswith("._") else "ds_store"})
+with open(out, "w") as f: json.dump({"count": len(entries), "items": entries}, f, indent=2)
+print(f"resource-forks.json: {len(entries)} items")
+PY
+
+# Type/creator
 log_json info "type-creator scan"
 python3 - "$KEEP" "$DEST/types.json" <<'PY' || true
 import os, sys, json, subprocess
@@ -196,7 +262,7 @@ from pathlib import Path
 keep, out = sys.argv[1:3]
 entries = []
 for p in Path(keep).rglob("*"):
-    if not p.is_file(): continue
+    if not p.is_file() or p.name.startswith("._"): continue
     try:
         r = subprocess.run(["mdls", "-name", "kMDItemFSName", "-name", "kMDItemContentType", str(p)], capture_output=True, text=True, timeout=5)
         entries.append({"path": str(p.relative_to(keep)), "mdls": r.stdout.strip()[:300]})
@@ -206,11 +272,13 @@ with open(out, "w") as f: json.dump(entries, f, indent=2)
 print(f"types.json: {len(entries)} entries")
 PY
 
+# Export modern
 if [[ $EXPORT_MODERN -eq 1 ]]; then
   log_json info "export-modern"
   mkdir -p "$MODERN"/{fonts,images,qxd,other}
   find "$KEEP" -type f -print0 | while IFS= read -r -d '' f; do
     base=$(basename "$f")
+    [[ "$base" == ._* ]] && continue
     safe=$(printf '%s' "$base" | sed 's/[^[:alnum:]._-]/_/g' | cut -c1-150)
     lower=$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')
     case "$lower" in
@@ -224,19 +292,78 @@ if [[ $EXPORT_MODERN -eq 1 ]]; then
   log_json info "modern export done"
 fi
 
+# Font inventory
+log_json info "font inventory"
+python3 - "$KEEP" "$MODERN" "$FONTS_JSON" "$FONTS_MD" <<'PY' || true
+import os, sys, json, time
+from pathlib import Path
+keep, modern, jout, mdout = sys.argv[1:5]
+fonts = []
+exts = {".suit",".dfont",".bmap",".ttf",".otf",".woff",".woff2"}
+for root in [keep, modern]:
+    if not os.path.isdir(root): continue
+    for p in Path(root).rglob("*"):
+        if p.is_file() and p.suffix.lower() in exts and not p.name.startswith("._"):
+            fonts.append({"name": p.name, "size": p.stat().st_size, "path": str(p.relative_to(root) if root == keep else p), "ext": p.suffix.lower()})
+with open(jout, "w") as f: json.dump({"generated": int(time.time()), "count": len(fonts), "fonts": fonts}, f, indent=2)
+with open(mdout, "w") as f:
+    f.write(f"# Fonts ({len(fonts)})\n\n")
+    for font in fonts:
+        f.write(f"- {font['name']} ({font['ext']}, {font['size']} bytes)\n")
+print(f"fonts.json / fonts.md: {len(fonts)} fonts")
+PY
+
+# Font conversion stub
+if [[ $CONVERT_FONTS -eq 1 ]]; then
+  log_json info "convert-fonts stub"
+  mkdir -p "$MODERN/fonts"
+  find "$KEEP" -type f \( -iname '*.suit' -o -iname '*.dfont' -o -iname '*.bmap' -o -iname '*.ttf' -o -iname '*.otf' \) -print0 2>/dev/null | while IFS= read -r -d '' f; do
+    base=$(basename "$f")
+    safe=$(printf '%s' "$base" | sed 's/[^[:alnum:]._-]/_/g' | cut -c1-150)
+    cp -n "$f" "$MODERN/fonts/$safe" 2>/dev/null || true
+  done
+  log_json info "fonts copied to modern/fonts (no format conversion)"
+fi
+
+# Verification + optional checksums
 SRC_COUNT=$(find "$SRC" -type f 2>/dev/null | wc -l | tr -d ' ')
 KEEP_COUNT=$(find "$KEEP" -type f 2>/dev/null | wc -l | tr -d ' ')
 CLONE_COUNT=0
 [[ -d "$CLONE_DEST" ]] && CLONE_COUNT=$(find "$CLONE_DEST" -type f 2>/dev/null | wc -l | tr -d ' ')
-python3 - "$VERIFY" "$SRC_COUNT" "$KEEP_COUNT" "$CLONE_COUNT" <<'PY'
+
+if [[ $VERIFY -eq 1 ]]; then
+  log_json info "checksum verification"
+  python3 - "$KEEP" "$VERIFY_FILE" "$SRC_COUNT" "$KEEP_COUNT" "$CLONE_COUNT" <<'PY'
+import sys, json, time, hashlib
+from pathlib import Path
+keep, out, sc, kc, cc = sys.argv[1:6]
+hashes = []
+for p in Path(keep).rglob("*"):
+    if p.is_file() and not p.name.startswith("._"):
+        h = hashlib.sha256()
+        try:
+            with open(p, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+            hashes.append({"path": str(p.relative_to(keep)), "sha256": h.hexdigest()})
+        except Exception:
+            pass
+with open(out, "w") as f:
+    json.dump({"generated": int(time.time()), "source_files": int(sc), "keepers_files": int(kc), "full_extract_files": int(cc), "checksums": hashes}, f, indent=2)
+print(f"verification.json with {len(hashes)} checksums")
+PY
+else
+  python3 - "$VERIFY_FILE" "$SRC_COUNT" "$KEEP_COUNT" "$CLONE_COUNT" <<'PY'
 import sys, json, time
 out, sc, kc, cc = sys.argv[1:5]
 with open(out, "w") as f:
     json.dump({"generated": int(time.time()), "source_files": int(sc), "keepers_files": int(kc), "full_extract_files": int(cc)}, f, indent=2)
-print(f"verification.json written")
+print("verification.json written")
 PY
+fi
 log_json info "verification source=$SRC_COUNT keepers=$KEEP_COUNT clone=$CLONE_COUNT"
 
+# State
 python3 - "$STATE" <<'PY'
 import json, time, sys
 with open(sys.argv[1], "w") as f:
@@ -252,5 +379,6 @@ echo "=== Done ==="
 echo "Keepers: $KEEP"
 [[ $CLONE -eq 1 ]] && echo "Full extract: $CLONE_DEST"
 [[ $EXPORT_MODERN -eq 1 ]] && echo "Modern: $MODERN"
-echo "Reports: $DEST/loot-report.* $VERIFY $DEST/types.json"
+echo "Fonts: $FONTS_MD"
+echo "Reports: $VERIFY_FILE $DEST/types.json $RESOURCE_JSON"
 echo "Next: review _review/ and trash _junk/. ISO is master."
