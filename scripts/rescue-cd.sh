@@ -1,23 +1,15 @@
 #!/bin/bash
 # rescue-cd.sh — hardened with config, safer paths, verification, resume, plan mode, etc.
-# Clone ON by default. Source this file's helpers or run directly.
+# Clone ON by default.
 #
 # Usage: scripts/rescue-cd.sh [options] [src-dir] [name]
 #
 # Options:
-#   --go                 Live mode (default dry-run)
-#   --plan               Write plan.json and exit (no changes)
-#   --no-clone           Disable full unmodified copy
-#   --sanitize           Safer pre-pass (renames + logs). Never renames the top-level source folder.
-#   --export-modern      Copy keepers to modern/ with sanitized names
-#   --convert-pict --extract-sit --convert-fonts --no-heuristics etc.
-#   --notify             macOS notification on finish
-#
-# Config: ~/.starmax.toml or ~/.starmax.conf (key=value)
+#   --go --plan --no-clone --sanitize --export-modern --notify etc.
+# Config: ~/.starmax.toml or ~/.starmax.conf
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# shellcheck source=starmax-config.sh
 source "$SCRIPT_DIR/starmax-config.sh"
 
 SRC=""
@@ -36,7 +28,7 @@ NOTIFY=${STARMAX_NOTIFY:-0}
 EXTRA_KEEP=""
 EXTRA_JUNK=""
 
-usage() { sed -n '2,20p' "$0" | sed 's/^# //'; exit 0; }
+usage() { sed -n '2,12p' "$0" | sed 's/^# //'; exit 0; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -82,7 +74,6 @@ VERIFY="$DEST/verification.json"
 [[ -d "$SRC" ]] || { echo "Source not found: $SRC"; exit 1; }
 mkdir -p "$DEST"
 
-# Structured logging helper
 log_json() {
   local level="$1" msg="$2"
   printf '{"ts":"%s","level":"%s","msg":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$level" "$msg" >> "$DEST/rescue.jsonl"
@@ -92,7 +83,6 @@ log_json() {
 exec > >(tee -a "$LOG") 2>&1
 log_json info "start name=$NAME src=$SRC mode=$([[ $GO -eq 1 ]] && echo live || echo dry) plan=$PLAN"
 
-# --- Plan mode ---
 if [[ $PLAN -eq 1 ]]; then
   python3 - "$SRC" "$PLAN_FILE" "$NAME" <<'PY'
 import os, sys, json, time
@@ -118,7 +108,6 @@ PY
   exit 0
 fi
 
-# --- Safer sanitize (never rename the top-level source directory) ---
 if [[ $SANITIZE -eq 1 && $GO -eq 1 ]]; then
   log_json info "sanitize start"
   find "$SRC" -mindepth 1 -depth -print0 2>/dev/null | while IFS= read -r -d '' p; do
@@ -131,7 +120,6 @@ if [[ $SANITIZE -eq 1 && $GO -eq 1 ]]; then
   done || true
 fi
 
-# --- Clone (default) ---
 if [[ $CLONE -eq 1 ]]; then
   if [[ $GO -eq 1 ]]; then
     if [[ -d "$CLONE_DEST" ]]; then
@@ -145,7 +133,6 @@ if [[ $CLONE -eq 1 ]]; then
   fi
 fi
 
-# Load patterns from config + extras
 KEEP_PATTERNS=()
 IFS=',' read -ra pats <<< "${STARMAX_KEEP_PATTERNS:-},${EXTRA_KEEP:-}"
 for p in "${pats[@]}"; do [[ -n "$p" ]] && KEEP_PATTERNS+=("$p"); done
@@ -153,7 +140,6 @@ if [[ -f "$HOME/.starmax-keep" ]]; then
   while IFS= read -r line; do [[ -n "$line" && ! "$line" =~ ^# ]] && KEEP_PATTERNS+=("$line"); done < "$HOME/.starmax-keep"
 fi
 
-# Classification
 junk_names=( "Desktop DB" "Desktop DF" "Preferences" "Previous System Folder" "Extensions" "System Folder" )
 IFS=',' read -ra ej <<< "${STARMAX_JUNK:-},${EXTRA_JUNK:-}"
 for x in "${ej[@]}"; do [[ -n "$x" ]] && junk_names+=("$x"); done
@@ -161,45 +147,48 @@ for x in "${ej[@]}"; do [[ -n "$x" ]] && junk_names+=("$x"); done
 do_move() {
   local item="$1" dest="$2"
   local srcpath="$SRC/$item"
-  [[ -e "$srcpath" ]] || return
+  [[ -e "$srcpath" ]] || return 0
   if [[ $GO -eq 1 ]]; then
     mkdir -p "$dest"
-    [[ -e "$dest/$item" ]] || mv "$srcpath" "$dest/$item" && log_json info "moved $item -> $(basename "$dest")"
+    if [[ -e "$dest/$item" ]]; then
+      log_json info "skip exists $item"
+    else
+      mv "$srcpath" "$dest/$item" && log_json info "moved $item -> $(basename "$dest")" || true
+    fi
   else
     log_json info "would move $item -> $(basename "$dest")"
   fi
+  return 0
 }
 
-# Explicit + remaining with heuristics
-for i in "Fonts"; do do_move "$i" "$KEEP"; done
-for i in "${junk_names[@]}"; do do_move "$i" "$JUNK"; done
-for i in "Applications"; do do_move "$i" "$REVIEW"; done
+for i in "Fonts"; do do_move "$i" "$KEEP" || true; done
+for i in "${junk_names[@]}"; do do_move "$i" "$JUNK" || true; done
+for i in "Applications"; do do_move "$i" "$REVIEW" || true; done
 
 while IFS= read -r -d '' entry; do
   base=$(basename "$entry")
   [[ "$base" == keepers || "$base" == _junk || "$base" == _review || "$base" == full-extract || "$base" == modern ]] && continue
   for pat in "${KEEP_PATTERNS[@]}"; do
     # shellcheck disable=SC2254
-    case "$base" in $pat) do_move "$base" "$KEEP"; continue 2 ;; esac
+    case "$base" in $pat) do_move "$base" "$KEEP" || true; continue 2 ;; esac
   done
   if [[ $HEURISTICS -eq 1 ]]; then
     qxd=$(find "$SRC/$base" -type f -iname '*.qxd' 2>/dev/null | wc -l | tr -d ' ')
     fonts=$(find "$SRC/$base" -type f \( -iname '*.suit' -o -iname '*.dfont' -o -iname '*.bmap' -o -iname '*.ttf' \) 2>/dev/null | wc -l | tr -d ' ')
     images=$(find "$SRC/$base" -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.pict' -o -iname '*.pct' -o -iname '*.tiff' -o -iname '*.tif' -o -iname '*.gif' \) 2>/dev/null | wc -l | tr -d ' ')
     if [[ "$qxd" -ge ${STARMAX_QXD_THRESHOLD:-1} || "$fonts" -ge ${STARMAX_FONT_THRESHOLD:-2} || "$images" -ge ${STARMAX_IMAGE_THRESHOLD:-5} ]]; then
-      do_move "$base" "$KEEP"
+      do_move "$base" "$KEEP" || true
       log_json info "heuristic keepers $base qxd=$qxd fonts=$fonts images=$images"
       continue
     fi
   fi
-  do_move "$base" "$REVIEW"
+  do_move "$base" "$REVIEW" || true
 done < <(find "$SRC" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
 
 [[ $GO -eq 0 ]] && { log_json info "dry-run complete"; exit 0; }
 
 mkdir -p "$KEEP"
 
-# --- Type/creator awareness (mdls) ---
 log_json info "type-creator scan"
 python3 - "$KEEP" "$DEST/types.json" <<'PY' || true
 import os, sys, json, subprocess
@@ -217,7 +206,6 @@ with open(out, "w") as f: json.dump(entries, f, indent=2)
 print(f"types.json: {len(entries)} entries")
 PY
 
-# --- Export modern ---
 if [[ $EXPORT_MODERN -eq 1 ]]; then
   log_json info "export-modern"
   mkdir -p "$MODERN"/{fonts,images,qxd,other}
@@ -235,7 +223,6 @@ if [[ $EXPORT_MODERN -eq 1 ]]; then
   log_json info "modern export done"
 fi
 
-# --- Verification ---
 SRC_COUNT=$(find "$SRC" -type f 2>/dev/null | wc -l | tr -d ' ')
 KEEP_COUNT=$(find "$KEEP" -type f 2>/dev/null | wc -l | tr -d ' ')
 CLONE_COUNT=0
@@ -249,14 +236,12 @@ print(f"verification.json written")
 PY
 log_json info "verification source=$SRC_COUNT keepers=$KEEP_COUNT clone=$CLONE_COUNT"
 
-# --- State / resume marker ---
 python3 - "$STATE" <<'PY'
 import json, time, sys
 with open(sys.argv[1], "w") as f:
     json.dump({"completed": int(time.time()), "status": "done"}, f)
 PY
 
-# --- Notification ---
 if [[ $NOTIFY -eq 1 ]]; then
   osascript -e "display notification \"Starmax rescue $NAME complete\" with title \"Starmax\"" 2>/dev/null || true
 fi
