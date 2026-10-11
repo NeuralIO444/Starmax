@@ -1,4 +1,4 @@
-# cd-rescue
+# Starmax
 
 Rescue OS 9-era HFS CDs on a modern Mac. One pipeline, three steps:
 
