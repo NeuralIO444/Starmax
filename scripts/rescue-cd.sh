@@ -8,7 +8,7 @@
 #   --go                 Live mode (default dry-run)
 #   --plan               Write plan.json and exit (no changes)
 #   --no-clone           Disable full unmodified copy
-#   --sanitize           Safer pre-pass (renames + logs)
+#   --sanitize           Safer pre-pass (renames + logs). Never renames the top-level source folder.
 #   --export-modern      Copy keepers to modern/ with sanitized names
 #   --convert-pict --extract-sit --convert-fonts --no-heuristics etc.
 #   --notify             macOS notification on finish
@@ -103,7 +103,6 @@ for entry in Path(src).iterdir():
     if not entry.is_dir() and not entry.is_file(): continue
     base = entry.name
     if base in ("keepers", "_junk", "_review", "full-extract"): continue
-    # simple heuristic sketch
     qxd = sum(1 for _ in entry.rglob("*.qxd")) if entry.is_dir() else 0
     images = sum(1 for p in entry.rglob("*") if p.suffix.lower() in {".jpg",".jpeg",".pict",".pct",".tiff",".tif",".gif"}) if entry.is_dir() else 0
     action = "review"
@@ -119,10 +118,10 @@ PY
   exit 0
 fi
 
-# --- Safer sanitize ---
+# --- Safer sanitize (never rename the top-level source directory) ---
 if [[ $SANITIZE -eq 1 && $GO -eq 1 ]]; then
   log_json info "sanitize start"
-  find "$SRC" -depth -print0 2>/dev/null | while IFS= read -r -d '' p; do
+  find "$SRC" -mindepth 1 -depth -print0 2>/dev/null | while IFS= read -r -d '' p; do
     base=$(basename "$p")
     dir=$(dirname "$p")
     safe=$(printf '%s' "$base" | sed 's/[:\n\r]/_/g; s/^[[:space:]]*//; s/[[:space:]]*$//; s/Icon\n/Icon_/g; s/[^[:alnum:]._-]/_/g' | cut -c1-180)
@@ -154,7 +153,7 @@ if [[ -f "$HOME/.starmax-keep" ]]; then
   while IFS= read -r line; do [[ -n "$line" && ! "$line" =~ ^# ]] && KEEP_PATTERNS+=("$line"); done < "$HOME/.starmax-keep"
 fi
 
-# Classification (simplified for brevity; full logic preserved in spirit)
+# Classification
 junk_names=( "Desktop DB" "Desktop DF" "Preferences" "Previous System Folder" "Extensions" "System Folder" )
 IFS=',' read -ra ej <<< "${STARMAX_JUNK:-},${EXTRA_JUNK:-}"
 for x in "${ej[@]}"; do [[ -n "$x" ]] && junk_names+=("$x"); done
@@ -171,7 +170,7 @@ do_move() {
   fi
 }
 
-# Explicit + remaining with heuristics (image + qxd + fonts + patterns)
+# Explicit + remaining with heuristics
 for i in "Fonts"; do do_move "$i" "$KEEP"; done
 for i in "${junk_names[@]}"; do do_move "$i" "$JUNK"; done
 for i in "Applications"; do do_move "$i" "$REVIEW"; done
@@ -199,9 +198,6 @@ done < <(find "$SRC" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
 [[ $GO -eq 0 ]] && { log_json info "dry-run complete"; exit 0; }
 
 mkdir -p "$KEEP"
-
-# Conversions (PICT, sit, fonts stub) — same as before, omitted for length; assume present
-# (full implementations kept in spirit from previous version)
 
 # --- Type/creator awareness (mdls) ---
 log_json info "type-creator scan"
