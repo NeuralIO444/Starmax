@@ -1,6 +1,6 @@
 #!/bin/bash
 # rip-old-mac-cd.sh — Phase 1+2 hardened HFS CD rip + extract
-# Incorporates prototype-run lessons (unique names, manual device preference, WH16NS40 notes).
+# Preferred hardware: HL-DT-ST DVDRAM GP60NB60 (more reliable on aged CDs).
 #
 # Usage: scripts/rip-old-mac-cd.sh [options] [name]
 #
@@ -14,7 +14,7 @@
 #
 # Name optional (auto from volume or OldMacCD-<timestamp>). Must be unique — refuses to overwrite an existing ISO.
 # Permanent ISO + .sha256 kept. Extracts to ~/Desktop/<name>/.
-# Prefer ddrescue. For LG WH16NS40: use drutil status to confirm media before imaging.
+# Prefer the GP60NB60. Use drutil -drive 1 status to confirm media before imaging.
 
 set -euo pipefail
 
@@ -47,7 +47,7 @@ LOG="$LOG_DIR/rip-$TS.log"
 exec > >(tee -a "$LOG") 2>&1
 echo "=== Starmax rip $TS ==="
 echo "Log: $LOG"
-echo "Tip: run 'drutil status' first to confirm the LG WH16NS40 sees media."
+echo "Tip: prefer the GP60NB60. Run 'drutil -drive 1 status' to confirm media."
 
 command -v impluse-hfs >/dev/null 2>&1 || { echo "ERROR: impluse-hfs missing. See README."; exit 1; }
 
@@ -66,14 +66,14 @@ else
   if [[ ${#CANDIDATES[@]} -eq 0 ]]; then
     echo "No HFS found."
     echo "1. Insert disc and click Ignore."
-    echo "2. drutil status  (should show media, not 'No Media Inserted')"
+    echo "2. drutil -drive 1 status  (should show media, not 'No Media Inserted')"
     echo "3. diskutil list  (identify Apple_HFS slice by eye)"
     echo "4. Re-run with --device /dev/diskXsY"
     exit 1
   fi
   read -r CD_DISK HFS_DEV <<< "${CANDIDATES[0]}"
   echo "Detected: $HFS_DEV (on $CD_DISK)"
-  [[ ${#CANDIDATES[@]} -gt 1 ]] && echo "Multiple candidates — prefer --device for the WH16NS40."
+  [[ ${#CANDIDATES[@]} -gt 1 ]] && echo "Multiple candidates — prefer --device (GP60NB60 recommended)."
 fi
 
 [[ -z "$NAME" ]] && NAME="OldMacCD-$TS"

@@ -2,17 +2,18 @@
 
 Rescue OS 9-era HFS CDs on a modern Mac (personal archive tool).
 
-**Phase 1** (hardening) + **Phase 2** (loot usefulness) are on the `phase2` branch.
+**Phase 1** (hardening) + **Phase 2** (loot usefulness) are on `main`.
 
-## Hardware notes (prototype run)
-- LG HL-DT-ST BD-RE WH16NS40 (firmware 1.02) USB optical drive.
-- Confirm media with `drutil status` before imaging (it sees the drive even when `diskutil` is quiet).
-- "No Media Inserted" → eject, reinsert firmly, wait ~15 s, recheck. Still nothing → test a known-good disc.
+## Hardware notes
+- **Preferred drive:** HL-DT-ST DVDRAM GP60NB60 (rev LI02) — more reliable on aged 1990s CDs than the WH16NS40.
+- Secondary: LG HL-DT-ST BD-RE WH16NS40 (firmware 1.02).
+- Confirm media with `drutil -drive 1 status` before imaging.
+- "No Media Inserted" → eject, reinsert firmly, wait ~15 s, recheck. Still nothing → test a known-good disc or try the other drive.
 - Prefer `--device` when multiple candidates appear; identify the Apple_HFS slice by eye if needed.
 - ISO names must be unique. The .iso is the preservation master.
 
 ## One-time setup
-- USB CD/DVD drive.
+- USB CD/DVD drive (GP60NB60 preferred).
 - [`impluse-hfs`](https://github.com/boredzo/impluse-hfs) in `/usr/local/bin`.
 - Recommended: `brew install ddrescue` and `brew install unar`.
 
@@ -45,17 +46,18 @@ Results land in `~/Desktop/CD-Archive/<name>/`:
 - StuffIt extract via `unar` (`--extract-sit`, originals kept)
 - Recursive heuristics on by default (content → keepers when fonts/QXD present)
 - Keepers SHA-256 manifest
-- WH16NS40-aware diagnostics and `--slow` for aged media
+- GP60NB60 preferred; WH16NS40 noted; `--slow` for aged media
 - Unique ISO name enforcement
 
 ## Prototype status (Oct 2026)
 - Starmax.CD.22: done (ISO `~/quark-hfs.iso`)
-- Starmax 4.Back-up.10/18/98: imaged (rename `CD Name.iso`), sort pending
-- Starmax 1: unresolved ("No Media Inserted") — retest with known-good disc
+- Starmax 4.Back-up.10/18/98: fully sorted, PICT converted, StuffIt extracted, zip refreshed
+- Starmax 1: both HFS slices imaged successfully with GP60NB60 (`Starmax1-slice1-gp60.iso`, `Starmax1-slice2-gp60.iso`)
 
 ## Roadmap
 - [x] Phase 1 hardening (ddrescue, SHA, logging, auto-name, robust fallback)
-- [x] Phase 2 loot features (this branch)
+- [x] Phase 2 loot features
+- [x] Prefer GP60NB60 hardware notes
 - [ ] One-button Mac app
 - [ ] Batch mode
 - [ ] Font conversion helpers (beyond detection)
