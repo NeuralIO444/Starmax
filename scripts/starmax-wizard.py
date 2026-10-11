@@ -25,6 +25,21 @@ except ImportError:
     print("Tip: pip install rich for the full modern TUI experience.")
 
 console = Console() if RICH else None
+CONFIG_PATH = Path.home() / ".starmax-wizard.json"
+
+def load_last_options():
+    if CONFIG_PATH.exists():
+        try:
+            return json.loads(CONFIG_PATH.read_text())
+        except Exception:
+            pass
+    return {}
+
+def save_options(opts):
+    try:
+        CONFIG_PATH.write_text(json.dumps(opts, indent=2))
+    except Exception:
+        pass
 
 def banner():
     art = r'''
@@ -63,6 +78,7 @@ def detect_drives():
     return drives
 
 def main():
+    last = load_last_options()
     banner()
     if RICH:
         console.print("[bold green]Welcome to the Starmax optical rescue wizard.[/]")
@@ -102,26 +118,40 @@ def main():
     drive = drives[choice-1] if 1 <= choice <= len(drives) else drives[0]
 
     # Step 3: Name
+    default_name = last.get("name", "Starmax-Rescue")
     if RICH:
-        name = Prompt.ask("[cyan]Archive name[/]", default="Starmax-Rescue")
+        name = Prompt.ask("[cyan]Archive name[/]", default=default_name)
     else:
-        name = input("Archive name [Starmax-Rescue]: ") or "Starmax-Rescue"
+        name = input(f"Archive name [{default_name}]: ") or default_name
 
-    # Step 4: Options with explanations
+    # Step 4: Options with explanations + last defaults
     if RICH:
-        console.print("\n[bold]Options[/] (defaults are usually fine)")
-        do_rip = Confirm.ask("Rip / image the disc first? (creates .iso + extracts to Desktop)", default=True)
-        do_sanitize = Confirm.ask("Sanitize filenames? (replaces : / special chars / long names with safe _ versions)", default=True)
-        do_modern = Confirm.ask("Create modern export? (sorts keepers into modern/fonts, modern/images, modern/qxd, modern/other with clean names for easy use on current Mac)", default=True)
-        do_verify = Confirm.ask("Run checksum verification? (SHA-256 every keepers file — slower but stronger integrity check)", default=False)
-        do_notify = Confirm.ask("Notify when done? (macOS notification)", default=True)
+        console.print("\n[bold]Options[/] (defaults remembered from last run)")
+        do_rip = Confirm.ask("Rip / image the disc first? (creates .iso + extracts to Desktop)", default=last.get("rip", True))
+        do_sanitize = Confirm.ask("Sanitize filenames? (replaces : / special chars / long names with safe _ versions)", default=last.get("sanitize", True))
+        do_modern = Confirm.ask("Create modern export? (sorts keepers into modern/fonts, modern/images, modern/qxd, modern/other with clean names for easy use on current Mac)", default=last.get("modern", True))
+        do_fonts = Confirm.ask("Convert fonts? (copy suitcases/.dfont into modern/fonts and attempt basic conversion if tools available)", default=last.get("fonts", False))
+        do_verify = Confirm.ask("Run checksum verification? (SHA-256 every keepers file — slower but stronger integrity check)", default=last.get("verify", False))
+        do_notify = Confirm.ask("Notify when done? (macOS notification)", default=last.get("notify", True))
     else:
         print("\nOptions:")
         do_rip = input("Rip / image the disc first? [Y/n]: ").lower() != "n"
         do_sanitize = input("Sanitize filenames? (safe renames) [Y/n]: ").lower() != "n"
         do_modern = input("Create modern export? (sorted clean copies) [Y/n]: ").lower() != "n"
+        do_fonts = input("Convert fonts? [y/N]: ").lower() == "y"
         do_verify = input("Run checksum verification? [y/N]: ").lower() == "y"
         do_notify = input("Notify when done? [Y/n]: ").lower() != "n"
+
+    # Save for next time
+    save_options({
+        "name": name,
+        "rip": do_rip,
+        "sanitize": do_sanitize,
+        "modern": do_modern,
+        "fonts": do_fonts,
+        "verify": do_verify,
+        "notify": do_notify,
+    })
 
     # Build commands
     script_dir = Path(__file__).parent
@@ -130,6 +160,8 @@ def main():
         rescue_cmd += " --sanitize"
     if do_modern:
         rescue_cmd += " --export-modern"
+    if do_fonts:
+        rescue_cmd += " --convert-fonts"
     if do_verify:
         rescue_cmd += " --verify"
     if do_notify:
@@ -145,22 +177,41 @@ def main():
         input()
 
     # Execute
+    success = True
     if do_rip:
         rip_cmd = f"{script_dir}/rip-old-mac-cd.sh --device /dev/disk{drive['id']} \"{name}\""
         if RICH:
             console.print(f"\n[bold yellow]Ripping with drive {drive['product']}...[/]")
-        run_cmd(rip_cmd)
+        r = run_cmd(rip_cmd)
+        if r.returncode != 0:
+            success = False
 
     if RICH:
         console.print("\n[bold yellow]Running rescue...[/]")
-    run_cmd(rescue_cmd)
+    r = run_cmd(rescue_cmd)
+    if r.returncode != 0:
+        success = False
 
-    # Done
+    # Done + summary
     archive = Path.home() / "Desktop" / "CD-Archive" / name
+    summary_lines = [f"Archive: {archive}"]
+    if archive.exists():
+        keepers = len(list((archive / "keepers").rglob("*"))) if (archive / "keepers").exists() else 0
+        modern = "yes" if (archive / "modern").exists() else "no"
+        fonts_md = archive / "fonts.md"
+        font_count = "?"
+        if fonts_md.exists():
+            font_count = sum(1 for line in fonts_md.read_text().splitlines() if line.startswith("-"))
+        summary_lines.append(f"Keepers files: {keepers}")
+        summary_lines.append(f"Modern export: {modern}")
+        summary_lines.append(f"Fonts catalogued: {font_count}")
+
+    border = "green" if success else "red"
+    title = "[bold green]Success[/]" if success else "[bold red]Finished with errors[/]"
     if RICH:
-        console.print(Panel(f"Done!\n\nArchive: {archive}\n\nCheck keepers/, modern/, fonts.md, verification.json", title="[bold green]Success[/]", border_style="green"))
+        console.print(Panel("\n".join(summary_lines), title=title, border_style=border))
     else:
-        print(f"\nDone. Results in {archive}")
+        print("\n" + "\n".join(summary_lines))
 
 if __name__ == "__main__":
     try:
