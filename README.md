@@ -1,90 +1,64 @@
 # Starmax
 
-Rescue OS 9-era HFS CDs on a modern Mac. Hardened Phase 1 pipeline:
+Rescue OS 9-era HFS CDs on a modern Mac (personal archive tool).
 
-1. **Rip** — bit-perfect ISO (prefer `ddrescue`) + SHA-256 + extract (`scripts/rip-old-mac-cd.sh`)
-2. **Extract** — full or resilient folder-by-folder fallback via `impluse-hfs`
-3. **Sort & archive** — configurable keepers / junk / review, zip, loot report (`scripts/rescue-cd.sh`)
+**Phase 1** (hardening) + **Phase 2** (loot usefulness) are on the `phase2` branch.
 
-Built October 2026 for 1998–1999 design CDs. macOS (Catalina+) shows HFS as "Uninitialized" — expected.
+## Hardware notes (prototype run)
+- LG HL-DT-ST BD-RE WH16NS40 (firmware 1.02) USB optical drive.
+- Confirm media with `drutil status` before imaging (it sees the drive even when `diskutil` is quiet).
+- "No Media Inserted" → eject, reinsert firmly, wait ~15 s, recheck. Still nothing → test a known-good disc.
+- Prefer `--device` when multiple candidates appear; identify the Apple_HFS slice by eye if needed.
+- ISO names must be unique. The .iso is the preservation master.
 
 ## One-time setup
-
 - USB CD/DVD drive.
-- [`impluse-hfs`](https://github.com/boredzo/impluse-hfs) built and in `/usr/local/bin`.
-- Optional but recommended: `brew install ddrescue` (retries on scratched discs).
+- [`impluse-hfs`](https://github.com/boredzo/impluse-hfs) in `/usr/local/bin`.
+- Recommended: `brew install ddrescue` and `brew install unar`.
+
+## Usage
 
 ```bash
-git clone https://github.com/boredzo/impluse-hfs.git ~/impluse-hfs
-cd ~/impluse-hfs
-xcodebuild -project impluse-hfs.xcodeproj -scheme impluse-hfs \
-  -configuration Release build MACOSX_DEPLOYMENT_TARGET=12.0
-sudo cp <DerivedData>/Build/Products/Release/impluse-hfs /usr/local/bin/
-```
-
-## Usage (Phase 1)
-
-```bash
-# Rip (auto-detect disc, optional name; uses ddrescue if present)
+# Rip (unique name required if file exists)
 scripts/rip-old-mac-cd.sh "My Disc"
-# or fully auto:
-scripts/rip-old-mac-cd.sh
+# or auto-name, or --device /dev/diskXsY --slow
 
-# Rescue (dry-run default; --go to execute)
-scripts/rescue-cd.sh --src "~/Desktop/My Disc" --name "My-Disc" --go
-# or with extras:
-scripts/rescue-cd.sh --src /path --keep "Icons,Docs" --junk "Cache" --go
+# Rescue (dry-run default)
+scripts/rescue-cd.sh --src "~/Desktop/My Disc" --name "My-Disc" --go \
+  --convert-pict --extract-sit
+# heuristics on by default; --no-heuristics to disable
 ```
 
-Results:
-- ISO + `.sha256` + logs in `~/cd-archive/` (and `logs/`)
-- Extract + sorted archive in `~/Desktop/CD-Archive/<name>/`
-  - `keepers/`, `_junk/`, `_review/`, `*-keepers.zip`, `loot-report.txt`, `rescue.log`
+Results land in `~/Desktop/CD-Archive/<name>/`:
+- `keepers/`, `_junk/`, `_review/`
+- `loot-report.md` + `loot-report.json`
+- `keepers.manifest.json` (sha256)
+- `*-keepers.zip`
+- logs
 
-**Nothing is deleted.** Review then trash `_junk/` yourself.
+**Nothing is deleted.** Trash `_junk/` in Finder after review.
 
-## Hardening (Phase 1)
+## Phase 2 features
+- PICT/PCT → PNG side-by-side (`sips`, `--convert-pict`)
+- Richer inventory: Markdown + JSON (fonts, QXD, images, archives, sizes, mtimes)
+- Better font detection (suitcases, .bmap, rsrc hints)
+- StuffIt extract via `unar` (`--extract-sit`, originals kept)
+- Recursive heuristics on by default (content → keepers when fonts/QXD present)
+- Keepers SHA-256 manifest
+- WH16NS40-aware diagnostics and `--slow` for aged media
+- Unique ISO name enforcement
 
-- Prefer `ddrescue` with mapfile and retries; fallback to `dd` with progress.
-- SHA-256 of every ISO.
-- Timestamped logs (rip + extract errors + rescue).
-- Robust device discovery (CD scheme preferred, `--device` override).
-- Auto volume-name detection for ISO/dest when name omitted.
-- Resilient extraction fallback (per top-level item, JSON failure log).
-- Configurable classification (`--keep`/`--junk`, env `STARMAX_KEEP`/`STARMAX_JUNK`).
-- Cleaner argument parsing, dry-run by default, no hardcoded personal paths.
-- `set -euo pipefail` + better ownership and error paths.
-
-## Why not the obvious tools
-
-- Finder/Disk Utility: no HFS since Catalina.
-- `hfsutils`: empty files on Apple Silicon.
-- Plain `dd` of whole disc confuses some tools; we target the HFS slice.
-
-## Known edge cases
-
-- Empty filenames kill full extract → automatic folder fallback.
-- Case/MacRoman duplicates → `dupFNErr`; extract individually.
-- True 0-byte files on disc are unrecoverable (`impluse-hfs list` shows real sizes).
-
-## Opening rescued files
-
-- Quark 3/4 `.qxd` → InDesign File → Open. Quark 5+ needs Markzware.
-- Old PS/AI generally open in modern Adobe.
-- `.sit` → The Unarchiver or `unar`.
-- Font suitcases → extract POST, FontForge → TTF.
+## Prototype status (Oct 2026)
+- Starmax.CD.22: done (ISO `~/quark-hfs.iso`)
+- Starmax 4.Back-up.10/18/98: imaged (rename `CD Name.iso`), sort pending
+- Starmax 1: unresolved ("No Media Inserted") — retest with known-good disc
 
 ## Roadmap
-
-- [x] `ddrescue` preference + retries
-- [x] Auto volume name
-- [x] SHA-256 + logging + robust discovery
-- [x] Configurable classification + better parsing
-- [ ] PICT → PNG in pipeline
-- [ ] One-button Mac app (SwiftUI front-end over hardened CLI)
-- [ ] Batch mode + recursive heuristics
-- [ ] Font conversion helpers
+- [x] Phase 1 hardening (ddrescue, SHA, logging, auto-name, robust fallback)
+- [x] Phase 2 loot features (this branch)
+- [ ] One-button Mac app
+- [ ] Batch mode
+- [ ] Font conversion helpers (beyond detection)
 
 ## License
-
-MIT. See [LICENSE](LICENSE).
+MIT.
