@@ -4,6 +4,9 @@ Rescue OS 9-era HFS CDs on a modern Mac (personal archive tool).
 
 **Phase 1 + Phase 2 + Phase 3** are on `main`. Mac app skeleton is on `mac-app-skeleton`.
 
+Full walkthroughs, format guides, and every failure mode hit so far:
+**[Starmax wiki](https://github.com/NeuralIO444/Starmax/wiki)**.
+
 ## First-run setup
 ```bash
 cd /path/to/Starmax
@@ -31,6 +34,10 @@ scripts/rescue-cd.sh --src "~/Desktop/My Disc" --name "My-Disc" --go --clone \
 # Batch (only Starmax folders)
 scripts/batch-rescue.sh --only 'Starmax*' --clone --convert-pict ~/Desktop/
 ```
+
+After imaging, verify the rip before filing the disc away — the ISO timestamp
+must be just now and the size plausible (~500–700 MB for a full CD):
+`ls -lh ~/cd-archive/`. A stale timestamp means the image didn't write.
 
 Results land in `~/Desktop/CD-Archive/<name>/`:
 - `full-extract/` (if --clone)
