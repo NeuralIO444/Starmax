@@ -1,6 +1,6 @@
 #!/bin/bash
 # rescue-cd.sh — Phase 2 + clone mode
-# Heuristics on by default. PICT side-by-side. .sit extract. MD+JSON reports.
+# Heuristics on by default (evaluated in dry-run too). PICT side-by-side. .sit extract. MD+JSON reports.
 # --clone does a full unmodified copy of the extract first (nothing moved).
 #
 # Usage: scripts/rescue-cd.sh [options] [src-dir] [name]
@@ -133,11 +133,11 @@ for i in "${keep_names[@]}"; do do_move "$i" "$KEEP"; done
 for i in "${junk_names[@]}"; do do_move "$i" "$JUNK"; done
 for i in "${review_names[@]}"; do do_move "$i" "$REVIEW"; done
 
-# Remaining top-level
+# Remaining top-level (heuristics evaluated even in dry-run)
 while IFS= read -r -d '' entry; do
   base=$(basename "$entry")
   [[ "$base" == keepers || "$base" == _junk || "$base" == _review || "$base" == full-extract ]] && continue
-  if [[ $HEURISTICS -eq 1 && $GO -eq 1 ]]; then
+  if [[ $HEURISTICS -eq 1 ]]; then
     qxd=$(find "$SRC/$base" -type f -iname '*.qxd' 2>/dev/null | wc -l | tr -d ' ')
     fonts=$(find "$SRC/$base" -type f \( -iname '*.suit' -o -iname '*.dfont' -o -iname '*.bmap' -o -iname '*.ttf' \) 2>/dev/null | wc -l | tr -d ' ')
     if [[ "$qxd" -ge 1 || "$fonts" -ge 2 ]]; then
