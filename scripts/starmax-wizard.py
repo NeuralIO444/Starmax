@@ -43,12 +43,12 @@ def save_options(opts):
 
 def banner():
     art = r'''
-  ____  _                             
- / ___|| |_ __ _ _ __ _ __ ___   __ _ 
- \___ \| __/ _` | '__| '_ ` _ \ / _` |
-  ___) | || (_| | |  | | | | | | (_| |
- |____/ \__\__,_|_|  |_| |_| |_|\__,_|
-                                       
+  ____ _____  _    ____  __  __    _    __  __
+ / ___|_   _|/ \  |  _ \|  \/  |  / \  \ \/ /
+ \___ \ | | / _ \ | |_) | |\/| | / _ \  \  / 
+  ___) || |/ ___ \|  _ <| |  | |/ ___ \ /  \ 
+ |____/ |_/_/   \_\_| \_\_|  |_/_/   \_/_/\_\
+                                             
     '''
     if RICH:
         console.print(Panel(art, title="[bold cyan]Starmax Rescue Wizard[/]", border_style="cyan", subtitle="Insert disc. Rescue the past."))
