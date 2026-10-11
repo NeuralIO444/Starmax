@@ -107,19 +107,21 @@ def main():
     else:
         name = input("Archive name [Starmax-Rescue]: ") or "Starmax-Rescue"
 
-    # Step 4: Options
+    # Step 4: Options with explanations
     if RICH:
-        do_rip = Confirm.ask("Rip / image the disc first?", default=True)
-        do_sanitize = Confirm.ask("Sanitize filenames?", default=True)
-        do_modern = Confirm.ask("Create modern export?", default=True)
-        do_verify = Confirm.ask("Run checksum verification?", default=False)
-        do_notify = Confirm.ask("Notify when done?", default=True)
+        console.print("\n[bold]Options[/] (defaults are usually fine)")
+        do_rip = Confirm.ask("Rip / image the disc first? (creates .iso + extracts)", default=True)
+        do_sanitize = Confirm.ask("Sanitize filenames? (replaces : / special chars / long names with safe _ versions)", default=True)
+        do_modern = Confirm.ask("Create modern export? (copies keepers into modern/fonts images qxd other with clean names)", default=True)
+        do_verify = Confirm.ask("Run checksum verification? (SHA-256 every keepers file — slower)", default=False)
+        do_notify = Confirm.ask("Notify when done? (macOS notification)", default=True)
     else:
-        do_rip = input("Rip first? [Y/n]: ").lower() != "n"
-        do_sanitize = input("Sanitize? [Y/n]: ").lower() != "n"
-        do_modern = input("Modern export? [Y/n]: ").lower() != "n"
-        do_verify = input("Verify checksums? [y/N]: ").lower() == "y"
-        do_notify = input("Notify? [Y/n]: ").lower() != "n"
+        print("\nOptions:")
+        do_rip = input("Rip / image the disc first? [Y/n]: ").lower() != "n"
+        do_sanitize = input("Sanitize filenames? (safe renames) [Y/n]: ").lower() != "n"
+        do_modern = input("Create modern export? [Y/n]: ").lower() != "n"
+        do_verify = input("Run checksum verification? [y/N]: ").lower() == "y"
+        do_notify = input("Notify when done? [Y/n]: ").lower() != "n"
 
     # Build commands
     script_dir = Path(__file__).parent
