@@ -1,5 +1,5 @@
 #!/bin/bash
-# rescue-cd.sh — engineering pass + quick-view
+# rescue-cd.sh — engineering pass + quick-view + soft icon convert
 # Clone ON by default. macOS bash 3.2 compatible.
 #
 # Usage: scripts/rescue-cd.sh [options] [src] [name]
@@ -9,6 +9,7 @@
 #   --verify          SHA-256 every keepers file into verification.json
 #   --convert-fonts   copy font files into modern/fonts (stub)
 #   --quick-view      generate PNG previews for PICT and poster frames for .mov
+#   --strip-icons     soft-convert: remove OS 9 custom icons so Finder shows modern defaults
 #   --no-heuristics
 # Config: ~/.starmax.toml or ~/.starmax.conf
 
@@ -28,13 +29,14 @@ CONVERT_PICT=0
 EXTRACT_SIT=0
 CONVERT_FONTS=0
 QUICK_VIEW=0
+STRIP_ICONS=0
 HEURISTICS=1
 VERIFY=0
 NOTIFY=${STARMAX_NOTIFY:-0}
 EXTRA_KEEP=""
 EXTRA_JUNK=""
 
-usage() { sed -n '2,20p' "$0" | sed 's/^# //'; exit 0; }
+usage() { sed -n '2,22p' "$0" | sed 's/^# //'; exit 0; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -47,6 +49,7 @@ while [[ $# -gt 0 ]]; do
     --extract-sit) EXTRACT_SIT=1; shift ;;
     --convert-fonts) CONVERT_FONTS=1; shift ;;
     --quick-view) QUICK_VIEW=1; shift ;;
+    --strip-icons) STRIP_ICONS=1; shift ;;
     --no-heuristics) HEURISTICS=0; shift ;;
     --verify) VERIFY=1; shift ;;
     --notify) NOTIFY=1; shift ;;
@@ -86,7 +89,6 @@ RESOURCE_JSON="$DEST/resource-forks.json"
 [[ -d "$SRC" ]] || { echo "Source not found: $SRC"; exit 1; }
 mkdir -p "$DEST"
 
-# Config dump
 echo "=== Effective config ==="
 echo "device: ${STARMAX_DEVICE:-none}"
 echo "keep_patterns: ${STARMAX_KEEP_PATTERNS:-none}"
@@ -103,7 +105,6 @@ log_json() {
 exec > >(tee -a "$LOG") 2>&1
 log_json info "start name=$NAME src=$SRC mode=$([[ $GO -eq 1 ]] && echo live || echo dry) plan=$PLAN"
 
-# Shared classification function for plan + live
 classify_item() {
   local base="$1"
   local qxd=0 fonts=0 images=0
@@ -142,7 +143,6 @@ junk_names=( "Desktop DB" "Desktop DF" "Preferences" "Previous System Folder" "E
 IFS=',' read -ra ej <<< "${STARMAX_JUNK:-},${EXTRA_JUNK:-}"
 for x in "${ej[@]}"; do [[ -n "$x" ]] && junk_names+=("$x"); done
 
-# --- Accurate plan mode ---
 if [[ $PLAN -eq 1 ]]; then
   echo "{" > "$PLAN_FILE"
   echo "  \"name\": \"$NAME\"," >> "$PLAN_FILE"
@@ -165,7 +165,6 @@ if [[ $PLAN -eq 1 ]]; then
   exit 0
 fi
 
-# Sanitize (skip root)
 if [[ $SANITIZE -eq 1 && $GO -eq 1 ]]; then
   log_json info "sanitize start"
   find "$SRC" -mindepth 1 -depth -print0 2>/dev/null | while IFS= read -r -d '' p; do
@@ -178,7 +177,6 @@ if [[ $SANITIZE -eq 1 && $GO -eq 1 ]]; then
   done || true
 fi
 
-# Clone
 if [[ $CLONE -eq 1 ]]; then
   if [[ $GO -eq 1 ]]; then
     if [[ -d "$CLONE_DEST" ]]; then
@@ -209,7 +207,6 @@ do_move() {
   return 0
 }
 
-# Classification
 while IFS= read -r -d '' entry; do
   base=$(basename "$entry")
   [[ "$base" == keepers || "$base" == _junk || "$base" == _review || "$base" == full-extract || "$base" == modern ]] && continue
@@ -226,6 +223,22 @@ done < <(find "$SRC" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
 [[ $GO -eq 0 ]] && { log_json info "dry-run complete"; exit 0; }
 
 mkdir -p "$KEEP"
+
+# Soft-convert icons: strip OS 9 custom icons
+if [[ $STRIP_ICONS -eq 1 ]]; then
+  log_json info "strip-icons start"
+  # Remove Icon\r and Icon files
+  find "$KEEP" "$MODERN" -name "Icon*" -o -name "Icon\r" 2>/dev/null | while IFS= read -r f; do
+    rm -f "$f" && log_json info "removed icon file $(basename "$f")" || true
+  done
+  # Clear resource forks and custom icon attributes on remaining files
+  find "$KEEP" "$MODERN" -type f 2>/dev/null | while IFS= read -r f; do
+    xattr -d com.apple.ResourceFork "$f" 2>/dev/null || true
+    xattr -d com.apple.FinderInfo "$f" 2>/dev/null || true
+    SetFile -a c "$f" 2>/dev/null || true
+  done
+  log_json info "strip-icons done (Finder will show modern defaults)"
+fi
 
 # Resource-fork report
 log_json info "resource-fork scan"
@@ -279,17 +292,15 @@ if [[ $EXPORT_MODERN -eq 1 ]]; then
   log_json info "modern export done"
 fi
 
-# Quick-view: PICT → PNG and .mov poster frames
+# Quick-view
 if [[ $QUICK_VIEW -eq 1 || $CONVERT_PICT -eq 1 ]]; then
   log_json info "quick-view start"
   mkdir -p "$PREVIEWS"
-  # PICT / PCT → PNG via sips
   find "$KEEP" -type f \( -iname '*.pict' -o -iname '*.pct' \) -print0 2>/dev/null | while IFS= read -r -d '' f; do
     base=$(basename "$f")
     safe=$(printf '%s' "$base" | sed 's/[^[:alnum:]._-]/_/g; s/\.[^.]*$//' | cut -c1-140)
     sips -s format png "$f" --out "$PREVIEWS/${safe}.png" >/dev/null 2>&1 && log_json info "preview pict $base" || true
   done
-  # .mov poster frame (ffmpeg preferred, fallback sips)
   find "$KEEP" -type f -iname '*.mov' -print0 2>/dev/null | while IFS= read -r -d '' f; do
     base=$(basename "$f")
     safe=$(printf '%s' "$base" | sed 's/[^[:alnum:]._-]/_/g; s/\.[^.]*$//' | cut -c1-140)
@@ -323,7 +334,6 @@ with open(mdout, "w") as f:
 print(f"fonts.json / fonts.md: {len(fonts)} fonts")
 PY
 
-# Font conversion stub
 if [[ $CONVERT_FONTS -eq 1 ]]; then
   log_json info "convert-fonts stub"
   mkdir -p "$MODERN/fonts"
@@ -335,7 +345,6 @@ if [[ $CONVERT_FONTS -eq 1 ]]; then
   log_json info "fonts copied to modern/fonts (no format conversion)"
 fi
 
-# Verification
 SRC_COUNT=$(find "$SRC" -type f 2>/dev/null | wc -l | tr -d ' ')
 KEEP_COUNT=$(find "$KEEP" -type f 2>/dev/null | wc -l | tr -d ' ')
 CLONE_COUNT=0
@@ -389,6 +398,7 @@ echo "Keepers: $KEEP"
 [[ $CLONE -eq 1 ]] && echo "Full extract: $CLONE_DEST"
 [[ $EXPORT_MODERN -eq 1 ]] && echo "Modern: $MODERN"
 [[ $QUICK_VIEW -eq 1 || $CONVERT_PICT -eq 1 ]] && echo "Previews: $PREVIEWS"
+[[ $STRIP_ICONS -eq 1 ]] && echo "Icons: stripped (modern Finder defaults)"
 echo "Fonts: $FONTS_MD"
 echo "Reports: $VERIFY_FILE $DEST/types.json $RESOURCE_JSON"
 echo "Next: review _review/ and trash _junk/. ISO is master."
