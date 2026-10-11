@@ -13,14 +13,15 @@
 # Skips the output directory (CD-Archive) automatically so it never clones itself.
 # Each matching subdirectory is treated as one disc extract.
 # Output goes to ~/Desktop/CD-Archive/<name>/
-# Summary: ~/Desktop/CD-Archive/batch-summary.txt
+# Summary is written to a timestamped file under ~/Desktop/CD-Archive/
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RESCUE="$SCRIPT_DIR/rescue-cd.sh"
 OUTBASE="$HOME/Desktop/CD-Archive"
-SUMMARY="$OUTBASE/batch-summary.txt"
+TS=$(date +%Y%m%d-%H%M%S)
+SUMMARY="$OUTBASE/batch-summary-$TS.txt"
 EXTRA_ARGS=()
 ONLY_PATTERN=""
 TARGET=""
@@ -46,7 +47,7 @@ done
 [[ -d "$TARGET" ]] || { echo "Not a directory: $TARGET"; exit 1; }
 
 mkdir -p "$OUTBASE"
-echo "=== Starmax batch rescue $(date) ===" | tee "$SUMMARY"
+echo "=== Starmax batch rescue $TS ===" | tee "$SUMMARY"
 echo "Source dir: $TARGET" | tee -a "$SUMMARY"
 echo "Only pattern: ${ONLY_PATTERN:-none}" | tee -a "$SUMMARY"
 echo "Flags: ${EXTRA_ARGS[*]:-none}" | tee -a "$SUMMARY"
