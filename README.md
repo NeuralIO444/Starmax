@@ -2,15 +2,22 @@
 
 Rescue OS 9-era HFS CDs on a modern Mac (personal archive tool).
 
-CLI-first. Current path is `harden-all` (includes Phase 1–3 + features-next + hardening). Mac app skeleton remains on `mac-app-skeleton` (optional).
+CLI-first. Current path is `tui-wizard` (includes engineering-pass + modern TUI). Mac app skeleton remains on `mac-app-skeleton` (optional).
 
 ## First-run setup
 ```bash
 cd /Users/mattciaglia/Dev/Starmax
 chmod +x scripts/*.sh
+pip install -r requirements.txt   # optional, for full TUI
 # Optional config
 cp example.starmax.toml ~/.starmax.toml
 ```
+
+## Fun TUI Wizard (recommended)
+```bash
+python3 scripts/starmax-wizard.py
+```
+Guided flow: insert disc → detect drive → name → options → rip + rescue. Uses `rich` for panels, tables, and spinners (falls back to plain prompts if missing).
 
 ## Hardware notes
 - **Preferred drive:** HL-DT-ST DVDRAM GP60NB60 (rev LI02) — more reliable on aged 1990s CDs.
@@ -57,7 +64,7 @@ cp example.starmax.toml ~/.starmax.toml
 
 **Nothing is deleted.** Trash `_junk/` in Finder after review. ISO stays the master.
 
-## New flags (harden-all)
+## New flags
 
 | Flag | Purpose |
 |------|---------|
@@ -65,6 +72,7 @@ cp example.starmax.toml ~/.starmax.toml
 | `--sanitize` | Pre-pass rename of special characters / long names (never renames the top-level source folder). |
 | `--export-modern` | Copy keepers into `modern/{fonts,images,qxd,other}/` with sanitized names. |
 | `--notify` | macOS notification when finished. |
+| `--verify` | SHA-256 checksums of keepers. |
 | `--no-clone` | Disable the default full unmodified copy. |
 | `--no-heuristics` | Skip image/QXD/font heuristics. |
 
@@ -127,6 +135,7 @@ Right-click an extracted folder in Finder → Quick Actions → Starmax Rescue.
 - [x] Export modern (`--export-modern`)
 - [x] Structured logs (`rescue.jsonl`) + verification + types.json
 - [x] Notification hook (`--notify` or config)
+- [x] Modern TUI wizard (`scripts/starmax-wizard.py`)
 - [ ] One-button Mac app (optional; skeleton on `mac-app-skeleton`)
 
 ## Prototype status (Oct 2026)
