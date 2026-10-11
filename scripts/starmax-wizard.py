@@ -130,6 +130,7 @@ def main():
         do_rip = Confirm.ask("Rip / image the disc first? (creates .iso + extracts to Desktop)", default=last.get("rip", True))
         do_sanitize = Confirm.ask("Sanitize filenames? (replaces : / special chars / long names with safe _ versions)", default=last.get("sanitize", True))
         do_modern = Confirm.ask("Create modern export? (sorts keepers into modern/fonts, modern/images, modern/qxd, modern/other with clean names for easy use on current Mac)", default=last.get("modern", True))
+        do_quick = Confirm.ask("Quick-view previews? (PICT→PNG and .mov poster frames in modern/previews for easy browsing)", default=last.get("quick", True))
         do_fonts = Confirm.ask("Convert fonts? (copy suitcases/.dfont into modern/fonts and attempt basic conversion if tools available)", default=last.get("fonts", False))
         do_verify = Confirm.ask("Run checksum verification? (SHA-256 every keepers file — slower but stronger integrity check)", default=last.get("verify", False))
         do_notify = Confirm.ask("Notify when done? (macOS notification)", default=last.get("notify", True))
@@ -138,6 +139,7 @@ def main():
         do_rip = input("Rip / image the disc first? [Y/n]: ").lower() != "n"
         do_sanitize = input("Sanitize filenames? (safe renames) [Y/n]: ").lower() != "n"
         do_modern = input("Create modern export? (sorted clean copies) [Y/n]: ").lower() != "n"
+        do_quick = input("Quick-view previews? [Y/n]: ").lower() != "n"
         do_fonts = input("Convert fonts? [y/N]: ").lower() == "y"
         do_verify = input("Run checksum verification? [y/N]: ").lower() == "y"
         do_notify = input("Notify when done? [Y/n]: ").lower() != "n"
@@ -148,6 +150,7 @@ def main():
         "rip": do_rip,
         "sanitize": do_sanitize,
         "modern": do_modern,
+        "quick": do_quick,
         "fonts": do_fonts,
         "verify": do_verify,
         "notify": do_notify,
@@ -160,6 +163,8 @@ def main():
         rescue_cmd += " --sanitize"
     if do_modern:
         rescue_cmd += " --export-modern"
+    if do_quick:
+        rescue_cmd += " --quick-view"
     if do_fonts:
         rescue_cmd += " --convert-fonts"
     if do_verify:
@@ -198,12 +203,14 @@ def main():
     if archive.exists():
         keepers = len(list((archive / "keepers").rglob("*"))) if (archive / "keepers").exists() else 0
         modern = "yes" if (archive / "modern").exists() else "no"
+        previews = "yes" if (archive / "modern" / "previews").exists() else "no"
         fonts_md = archive / "fonts.md"
         font_count = "?"
         if fonts_md.exists():
             font_count = sum(1 for line in fonts_md.read_text().splitlines() if line.startswith("-"))
         summary_lines.append(f"Keepers files: {keepers}")
         summary_lines.append(f"Modern export: {modern}")
+        summary_lines.append(f"Quick-view previews: {previews}")
         summary_lines.append(f"Fonts catalogued: {font_count}")
 
     border = "green" if success else "red"
