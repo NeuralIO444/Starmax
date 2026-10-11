@@ -1,11 +1,13 @@
 #!/bin/bash
-# rescue-cd.sh — Phase 2: sort + convert + inventory + manifest
+# rescue-cd.sh — Phase 2 + clone mode
 # Heuristics on by default. PICT side-by-side. .sit extract. MD+JSON reports.
+# --clone does a full unmodified copy of the extract first (nothing moved).
 #
 # Usage: scripts/rescue-cd.sh [options] [src-dir] [name]
 #
 # Options:
 #   --go                 Live mode (default dry-run)
+#   --clone              Full unmodified copy of source into DEST/full-extract/ (then optional sort)
 #   -s, --src DIR        Source extracted folder
 #   -n, --name NAME      Disc name
 #   -o, --outdir DIR     Output base (default: ~/Desktop/CD-Archive)
@@ -19,6 +21,7 @@
 #   -h, --help
 #
 # NOTHING is deleted. Junk goes to _junk/; you trash it in Finder after review.
+# With --clone the original extract layout is preserved under full-extract/.
 
 set -euo pipefail
 
@@ -26,6 +29,7 @@ SRC=""
 NAME=""
 OUTBASE="$HOME/Desktop/CD-Archive"
 GO=0
+CLONE=0
 VERBOSE=0
 CONVERT_PICT=0
 EXTRACT_SIT=0
@@ -34,11 +38,12 @@ HEURISTICS=1
 EXTRA_KEEP=""
 EXTRA_JUNK=""
 
-usage() { sed -n '2,22p' "$0" | sed 's/^# //'; exit 0; }
+usage() { sed -n '2,25p' "$0" | sed 's/^# //'; exit 0; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --go) GO=1; shift ;;
+    --clone) CLONE=1; shift ;;
     -s|--src) SRC="$2"; shift 2 ;;
     -n|--name) NAME="$2"; shift 2 ;;
     -o|--outdir) OUTBASE="$2"; shift 2 ;;
@@ -66,17 +71,35 @@ DEST="$OUTBASE/$NAME"
 KEEP="$DEST/keepers"
 JUNK="$DEST/_junk"
 REVIEW="$DEST/_review"
+CLONE_DEST="$DEST/full-extract"
 LOG="$DEST/rescue.log"
 
 if [[ ! -d "$SRC" ]]; then echo "Source not found: $SRC"; exit 1; fi
 mkdir -p "$DEST"
 exec > >(tee -a "$LOG") 2>&1
 
-echo "=== Starmax rescue Phase 2: $NAME ==="
+echo "=== Starmax rescue: $NAME ==="
 echo "Source: $SRC"
 echo "Dest:   $DEST"
 echo "Mode:   $([[ $GO -eq 1 ]] && echo LIVE || echo DRY-RUN)"
+echo "Clone:   $([[ $CLONE -eq 1 ]] && echo ON || echo OFF)"
 echo "Heuristics: $([[ $HEURISTICS -eq 1 ]] && echo ON || echo OFF)"
+
+# --- Clone mode (full unmodified copy) ---
+if [[ $CLONE -eq 1 ]]; then
+  echo
+  echo "--- clone (full unmodified copy) ---"
+  if [[ $GO -eq 1 ]]; then
+    if [[ -d "$CLONE_DEST" ]]; then
+      echo "  full-extract already exists, skipped."
+    else
+      mkdir -p "$CLONE_DEST"
+      cp -a "$SRC"/. "$CLONE_DEST"/ && echo "  cloned to $CLONE_DEST"
+    fi
+  else
+    echo "  would clone entire source to $CLONE_DEST"
+  fi
+fi
 
 # Classification lists
 junk_names=( "Desktop DB" "Desktop DF" "Preferences" "Previous System Folder" "Extensions" "System Folder" )
@@ -113,9 +136,8 @@ for i in "${review_names[@]}"; do do_move "$i" "$REVIEW"; done
 # Remaining top-level
 while IFS= read -r -d '' entry; do
   base=$(basename "$entry")
-  [[ "$base" == keepers || "$base" == _junk || "$base" == _review ]] && continue
+  [[ "$base" == keepers || "$base" == _junk || "$base" == _review || "$base" == full-extract ]] && continue
   if [[ $HEURISTICS -eq 1 && $GO -eq 1 ]]; then
-    # Simple content heuristic
     qxd=$(find "$SRC/$base" -type f -iname '*.qxd' 2>/dev/null | wc -l | tr -d ' ')
     fonts=$(find "$SRC/$base" -type f \( -iname '*.suit' -o -iname '*.dfont' -o -iname '*.bmap' -o -iname '*.ttf' \) 2>/dev/null | wc -l | tr -d ' ')
     if [[ "$qxd" -ge 1 || "$fonts" -ge 2 ]]; then
@@ -129,9 +151,12 @@ done < <(find "$SRC" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
 
 if [[ $GO -eq 0 ]]; then
   echo
-  echo "Dry-run complete. Re-run with --go (and optional --convert-pict --extract-sit)."
+  echo "Dry-run complete. Re-run with --go (and optional --clone --convert-pict --extract-sit)."
   exit 0
 fi
+
+# Ensure keepers dir exists so later steps don't abort
+mkdir -p "$KEEP"
 
 # --- Phase 2: PICT side-by-side ---
 if [[ $CONVERT_PICT -eq 1 ]]; then
@@ -144,7 +169,7 @@ if [[ $CONVERT_PICT -eq 1 ]]; then
     else
       sips -s format png "$f" --out "$png" >/dev/null 2>&1 && echo "  converted: $(basename "$f") → $(basename "$png")" || echo "  failed: $f"
     fi
-  done
+  done || true
 fi
 
 # --- Phase 2: StuffIt ---
@@ -163,7 +188,7 @@ if [[ $EXTRACT_SIT -eq 1 ]]; then
         mkdir -p "$outdir"
         unar -quiet -output-directory "$outdir" "$f" && echo "  extracted: $base → unarchived/" || echo "  failed: $f"
       fi
-    done
+    done || true
   fi
 fi
 
@@ -173,31 +198,31 @@ echo "--- inventory ---"
 MD="$DEST/loot-report.md"
 JSON="$DEST/loot-report.json"
 
-# Simple JSON inventory via python for reliability
-python3 - "$KEEP" "$JSON" "$NAME" <<'PY'
-import os, sys, json, hashlib, time
+python3 - "$KEEP" "$JSON" "$NAME" <<'PY' || true
+import os, sys, json, time
 from pathlib import Path
 keep, out, name = sys.argv[1], sys.argv[2], sys.argv[3]
 files = []
-for root, dirs, fs in os.walk(keep):
-    for fn in fs:
-        p = Path(root)/fn
-        try:
-            st = p.stat()
-            rel = str(p.relative_to(keep))
-            ext = p.suffix.lower()
-            files.append({
-                "path": rel,
-                "size": st.st_size,
-                "mtime": int(st.st_mtime),
-                "ext": ext,
-                "is_font": ext in {".ttf",".otf",".suit",".dfont",".bmap",".pfb"} or "rsrc" in fn.lower(),
-                "is_qxd": ext == ".qxd",
-                "is_pict": ext in {".pict",".pct"},
-                "is_sit": ext in {".sit",".sitx"}
-            })
-        except Exception:
-            pass
+if os.path.isdir(keep):
+    for root, dirs, fs in os.walk(keep):
+        for fn in fs:
+            p = Path(root)/fn
+            try:
+                st = p.stat()
+                rel = str(p.relative_to(keep))
+                ext = p.suffix.lower()
+                files.append({
+                    "path": rel,
+                    "size": st.st_size,
+                    "mtime": int(st.st_mtime),
+                    "ext": ext,
+                    "is_font": ext in {".ttf",".otf",".suit",".dfont",".bmap",".pfb"} or "rsrc" in fn.lower(),
+                    "is_qxd": ext == ".qxd",
+                    "is_pict": ext in {".pict",".pct"},
+                    "is_sit": ext in {".sit",".sitx"}
+                })
+            except Exception:
+                pass
 manifest = {"name": name, "generated": int(time.time()), "files": files}
 with open(out, "w") as f:
     json.dump(manifest, f, indent=2)
@@ -227,6 +252,7 @@ PY
   echo "- [ ] PICT originals kept; PNGs side-by-side if --convert-pict was used"
   echo "- [ ] Review _review/ and trash _junk/ in Finder"
   echo "- [ ] ISO remains the preservation master"
+  [[ $CLONE -eq 1 ]] && echo "- [ ] Full unmodified extract is in full-extract/"
 } > "$MD"
 echo "Markdown report: $MD"
 echo "JSON inventory: $JSON"
@@ -236,26 +262,27 @@ if [[ $DO_MANIFEST -eq 1 ]]; then
   echo
   echo "--- keepers manifest ---"
   MANIFEST="$DEST/keepers.manifest.json"
-  python3 - "$KEEP" "$MANIFEST" <<'PY'
+  python3 - "$KEEP" "$MANIFEST" <<'PY' || true
 import os, sys, json, hashlib, time
 from pathlib import Path
 keep, out = sys.argv[1], sys.argv[2]
 entries = []
-for root, dirs, fs in os.walk(keep):
-    for fn in fs:
-        p = Path(root)/fn
-        try:
-            data = p.read_bytes()
-            h = hashlib.sha256(data).hexdigest()
-            st = p.stat()
-            entries.append({
-                "path": str(p.relative_to(keep)),
-                "size": st.st_size,
-                "mtime": int(st.st_mtime),
-                "sha256": h
-            })
-        except Exception:
-            pass
+if os.path.isdir(keep):
+    for root, dirs, fs in os.walk(keep):
+        for fn in fs:
+            p = Path(root)/fn
+            try:
+                data = p.read_bytes()
+                h = hashlib.sha256(data).hexdigest()
+                st = p.stat()
+                entries.append({
+                    "path": str(p.relative_to(keep)),
+                    "size": st.st_size,
+                    "mtime": int(st.st_mtime),
+                    "sha256": h
+                })
+            except Exception:
+                pass
 with open(out, "w") as f:
     json.dump({"generated": int(time.time()), "files": entries}, f, indent=2)
 print(f"Manifest: {len(entries)} files → {out}")
@@ -267,7 +294,7 @@ echo
 echo "--- archive ---"
 ZIP="$DEST/$NAME-keepers.zip"
 if [[ ! -f "$ZIP" ]]; then
-  (cd "$DEST" && zip -qr "$NAME-keepers.zip" keepers) && echo "Zip: $ZIP"
+  (cd "$DEST" && zip -qr "$NAME-keepers.zip" keepers) && echo "Zip: $ZIP" || echo "Zip skipped (empty or error)"
 else
   echo "Zip exists, skipped."
 fi
@@ -275,6 +302,7 @@ fi
 echo
 echo "=== Done ==="
 echo "Keepers: $KEEP"
+[[ $CLONE -eq 1 ]] && echo "Full extract: $CLONE_DEST"
 echo "Reports: $MD / $JSON"
 echo "Log: $LOG"
 echo "Next: review _review/ and _junk/, then trash _junk/ yourself. ISO stays the master."
