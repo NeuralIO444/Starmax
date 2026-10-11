@@ -1,6 +1,6 @@
 #!/bin/bash
 # rescue-cd.sh — hardened with config, safer paths, verification, resume, plan mode, etc.
-# Clone ON by default.
+# Clone ON by default. Compatible with macOS bash 3.2.
 #
 # Usage: scripts/rescue-cd.sh [options] [src-dir] [name]
 #
@@ -212,7 +212,8 @@ if [[ $EXPORT_MODERN -eq 1 ]]; then
   find "$KEEP" -type f -print0 | while IFS= read -r -d '' f; do
     base=$(basename "$f")
     safe=$(printf '%s' "$base" | sed 's/[^[:alnum:]._-]/_/g' | cut -c1-150)
-    case "${base,,}" in
+    lower=$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')
+    case "$lower" in
       *.ttf|*.otf|*.suit|*.dfont|*.bmap) dest="$MODERN/fonts/$safe" ;;
       *.qxd) dest="$MODERN/qxd/$safe" ;;
       *.jpg|*.jpeg|*.png|*.gif|*.tiff|*.tif|*.pict|*.pct) dest="$MODERN/images/$safe" ;;
