@@ -3,16 +3,17 @@
 #
 # Usage: scripts/batch-rescue.sh [options] <dir-of-extracts>
 #
-# Options passed through to each rescue-cd.sh invocation:
-#   --clone --convert-pict --extract-sit --no-heuristics etc.
+# Options:
+#   --only PATTERN     Only process folders whose name matches the glob (e.g. 'Starmax*')
+#   --clone --convert-pict --extract-sit --no-heuristics etc. (passed through)
 #
 # Example:
-#   scripts/batch-rescue.sh --clone --convert-pict ~/Desktop/Extracts/
+#   scripts/batch-rescue.sh --only 'Starmax*' --clone --convert-pict ~/Desktop/
 #
-# Each subdirectory is treated as one disc extract.
-# Name is derived from the folder name.
+# Skips the output directory (CD-Archive) automatically so it never clones itself.
+# Each matching subdirectory is treated as one disc extract.
 # Output goes to ~/Desktop/CD-Archive/<name>/
-# A summary is written to ~/Desktop/CD-Archive/batch-summary.txt
+# Summary: ~/Desktop/CD-Archive/batch-summary.txt
 
 set -euo pipefail
 
@@ -21,10 +22,14 @@ RESCUE="$SCRIPT_DIR/rescue-cd.sh"
 OUTBASE="$HOME/Desktop/CD-Archive"
 SUMMARY="$OUTBASE/batch-summary.txt"
 EXTRA_ARGS=()
+ONLY_PATTERN=""
 TARGET=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --only)
+      ONLY_PATTERN="$2"
+      shift 2 ;;
     --clone|--convert-pict|--extract-sit|--no-heuristics|--go)
       EXTRA_ARGS+=("$1")
       shift ;;
@@ -37,18 +42,35 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -z "$TARGET" ]] && { echo "Usage: $0 [--clone ...] <dir-of-extracts>"; exit 1; }
+[[ -z "$TARGET" ]] && { echo "Usage: $0 [--only 'Starmax*'] [--clone ...] <dir-of-extracts>"; exit 1; }
 [[ -d "$TARGET" ]] || { echo "Not a directory: $TARGET"; exit 1; }
 
 mkdir -p "$OUTBASE"
 echo "=== Starmax batch rescue $(date) ===" | tee "$SUMMARY"
 echo "Source dir: $TARGET" | tee -a "$SUMMARY"
+echo "Only pattern: ${ONLY_PATTERN:-none}" | tee -a "$SUMMARY"
 echo "Flags: ${EXTRA_ARGS[*]:-none}" | tee -a "$SUMMARY"
 echo | tee -a "$SUMMARY"
 
 count=0
 while IFS= read -r -d '' dir; do
   name=$(basename "$dir")
+
+  # Always skip the output directory itself
+  if [[ "$name" == "CD-Archive" || "$dir" == "$OUTBASE" ]]; then
+    echo "SKIP (output dir): $name" | tee -a "$SUMMARY"
+    continue
+  fi
+
+  # Optional name filter
+  if [[ -n "$ONLY_PATTERN" ]]; then
+    # shellcheck disable=SC2254
+    case "$name" in
+      $ONLY_PATTERN) ;;
+      *) echo "SKIP (pattern): $name" | tee -a "$SUMMARY"; continue ;;
+    esac
+  fi
+
   echo "--- Processing: $name ---" | tee -a "$SUMMARY"
   if "$RESCUE" --src "$dir" --name "$name" --go "${EXTRA_ARGS[@]}" >>"$SUMMARY" 2>&1; then
     echo "OK: $name" | tee -a "$SUMMARY"
