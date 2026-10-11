@@ -41,6 +41,21 @@ Batch summary is timestamped: `~/Desktop/CD-Archive/batch-summary-YYYYMMDD-HHMMS
 
 **Nothing is deleted.** Trash `_junk/` in Finder after review.
 
+## What I would do differently / opportunities
+
+Now that the pipeline has been run against real 1998 discs:
+
+- **Device detection** is still the weakest point. A small interactive picker (or mandatory `--device` prompt) would have saved time versus the fragile `awk` on `diskutil list`.
+- **Clone-by-default** is the right call for preservation. Sorting should be an optional second pass rather than the primary behavior.
+- **Heuristics** are useful but narrow (QXD + font count). Expanding to image-heavy folders, known project names, or a simple config file of keep patterns would catch more without manual review.
+- **Special characters** (colons, leading spaces, `Icon\n`, long paths) still surface on old Mac volumes. A pre-sanitize or safer `mv`/`cp` wrapper would reduce failures.
+- **Batch** is solid with `--only`, but a dry-run mode and a "skip already processed" check would make re-runs safer.
+- **Mac app** skeleton exists; the highest-value next step is wiring it to the CLI so the common path is one button instead of terminal.
+- **Font conversion** is still detection-only. Optional FontForge stubs (or a documented manual step) would complete the modernize checklist.
+- **Verification** beyond SHA-256 of keepers (e.g., optional sector-level or file-count comparison against the ISO) would increase confidence on aged media.
+
+See `CHANGELOG.md` and `BUGS.md` for the running record.
+
 ## Phase 3
 - [x] `--clone` mode (full unmodified copy)
 - [x] Empty-keepers path hardened
