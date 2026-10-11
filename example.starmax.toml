@@ -1,0 +1,10 @@
+# Example Starmax config — copy to ~/.starmax.toml or ~/.starmax.conf
+# Simple key=value (comments with #)
+
+preferred_device = "/dev/disk4s1s2"
+keep_patterns = "Club*,Flyer*,*.qxd"
+junk_names = "Desktop DB,Desktop DF,Extensions"
+qxd_threshold = 1
+image_threshold = 5
+font_threshold = 2
+notify = 1
