@@ -110,16 +110,16 @@ def main():
     # Step 4: Options with explanations
     if RICH:
         console.print("\n[bold]Options[/] (defaults are usually fine)")
-        do_rip = Confirm.ask("Rip / image the disc first? (creates .iso + extracts)", default=True)
+        do_rip = Confirm.ask("Rip / image the disc first? (creates .iso + extracts to Desktop)", default=True)
         do_sanitize = Confirm.ask("Sanitize filenames? (replaces : / special chars / long names with safe _ versions)", default=True)
-        do_modern = Confirm.ask("Create modern export? (copies keepers into modern/fonts images qxd other with clean names)", default=True)
-        do_verify = Confirm.ask("Run checksum verification? (SHA-256 every keepers file — slower)", default=False)
+        do_modern = Confirm.ask("Create modern export? (sorts keepers into modern/fonts, modern/images, modern/qxd, modern/other with clean names for easy use on current Mac)", default=True)
+        do_verify = Confirm.ask("Run checksum verification? (SHA-256 every keepers file — slower but stronger integrity check)", default=False)
         do_notify = Confirm.ask("Notify when done? (macOS notification)", default=True)
     else:
         print("\nOptions:")
         do_rip = input("Rip / image the disc first? [Y/n]: ").lower() != "n"
         do_sanitize = input("Sanitize filenames? (safe renames) [Y/n]: ").lower() != "n"
-        do_modern = input("Create modern export? [Y/n]: ").lower() != "n"
+        do_modern = input("Create modern export? (sorted clean copies) [Y/n]: ").lower() != "n"
         do_verify = input("Run checksum verification? [y/N]: ").lower() == "y"
         do_notify = input("Notify when done? [Y/n]: ").lower() != "n"
 
