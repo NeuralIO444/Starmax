@@ -1,30 +1,54 @@
 # Starmax
 
-Rescue OS 9-era HFS CDs on a modern Mac (personal archive tool).
+Rescue OS 9-era HFS CDs on a modern Mac.
 
-CLI-first. Current path is `tui-wizard` (includes engineering-pass + modern TUI). Mac app skeleton remains on `mac-app-skeleton` (optional).
+CLI-first with an optional modern TUI wizard. The `.iso` is the preservation master. Nothing is deleted automatically.
 
-## First-run setup
+## Requirements
+
+- macOS (tested on Apple Silicon)
+- `drutil`, `diskutil`, `sips` (built-in)
+- Optional but recommended:
+  - `impluse-hfs` (for HFS extraction)
+  - `ffmpeg` (better .mov poster frames)
+  - `unar` (StuffIt extraction)
+  - `rich` Python package (full TUI)
+
 ```bash
-cd /Users/mattciaglia/Dev/Starmax
+git clone https://github.com/NeuralIO444/Starmax.git
+cd Starmax
 chmod +x scripts/*.sh
 pip install -r requirements.txt   # optional, for full TUI
 # Optional config
 cp example.starmax.toml ~/.starmax.toml
 ```
 
-## Fun TUI Wizard (recommended)
+## Quick start (recommended)
+
 ```bash
 python3 scripts/starmax-wizard.py
 ```
-Guided flow: insert disc → detect drive → name → options → rip + rescue. Uses `rich` for panels, tables, and spinners (falls back to plain prompts if missing).
+
+The wizard guides you through:
+1. Insert disc
+2. Detect drive
+3. Name the archive
+4. Options (sanitize, modern export, soft-convert icons, quick-view, etc.)
+5. Rip + rescue
+
+Results land in `~/Desktop/CD-Archive/<name>/`.
 
 ## Hardware notes
+
 - **Preferred drive:** HL-DT-ST DVDRAM GP60NB60 (rev LI02) — more reliable on aged 1990s CDs.
-- Secondary: LG HL-DT-ST BD-RE WH16NS40.
-- Confirm media with `drutil -drive 1 status` before imaging.
-- Prefer `--device /dev/diskXsY` when multiple slices or drives appear.
-- ISO names must be unique. The `.iso` is the preservation master.
+- Other drives (e.g. LG WH16NS40) often work but may need tray cycling.
+- Always confirm media:
+  ```bash
+  drutil -drive 1 status
+  diskutil list
+  ```
+- Prefer explicit `--device /dev/diskXsY` when multiple slices appear.
+- ISO filenames must be unique.
 
 ## Typical CLI workflow
 
@@ -45,39 +69,38 @@ Guided flow: insert disc → detect drive → name → options → rip + rescue.
    # Dry-run / plan first
    scripts/rescue-cd.sh --src ~/Desktop/My-Disc-Name --name "My-Disc-Name" --plan
 
-   # Live (recommended extras)
+   # Live (recommended)
    scripts/rescue-cd.sh --src ~/Desktop/My-Disc-Name --name "My-Disc-Name" --go \
-     --export-modern --notify
-   ```
-   Results in `~/Desktop/CD-Archive/<name>/`:
-   - `full-extract/` (unmodified clone, default)
-   - `keepers/`, `_junk/`, `_review/`
-   - `modern/` (sanitized export into fonts/images/qxd/other when `--export-modern`)
-   - `plan.json`, `verification.json`, `types.json`, `state.json`
-   - `rescue.log` + `rescue.jsonl` (structured)
-   - reports, manifest, zip
-
-4. **Batch (optional)**
-   ```bash
-   scripts/batch-rescue.sh --only 'Starmax*' --skip-processed ~/Desktop/
+     --sanitize --export-modern --strip-icons --quick-view --notify
    ```
 
-**Nothing is deleted.** Trash `_junk/` in Finder after review. ISO stays the master.
+**Output structure** (`~/Desktop/CD-Archive/<name>/`):
+- `full-extract/` — unmodified clone (default)
+- `keepers/`, `_junk/`, `_review/`
+- `modern/` — sanitized copies sorted into `fonts/`, `images/`, `qxd/`, `other/`
+- `modern/previews/` — PICT→PNG and .mov poster frames (when `--quick-view`)
+- `plan.json`, `verification.json`, `types.json`, `fonts.md`, `rescue.log`, `rescue.jsonl`
 
-## New flags
+**Nothing is deleted.** Review `_review/` and trash `_junk/` yourself. The ISO stays the master.
+
+## Key flags
 
 | Flag | Purpose |
 |------|---------|
-| `--plan` | Write `plan.json` (item + action + reason) and exit. No changes. |
-| `--sanitize` | Pre-pass rename of special characters / long names (never renames the top-level source folder). |
-| `--export-modern` | Copy keepers into `modern/{fonts,images,qxd,other}/` with sanitized names. |
+| `--plan` | Write `plan.json` and exit (no changes). |
+| `--sanitize` | Rename special characters / long names (safe; never renames the top-level source). |
+| `--export-modern` | Copy keepers into `modern/{fonts,images,qxd,other}/` with clean names. |
+| `--strip-icons` | Soft-convert: remove OS 9 custom icons so Finder shows modern defaults. |
+| `--quick-view` | Generate PNG previews for PICT and poster frames for .mov. |
+| `--convert-fonts` | Copy suitcase/.dfont/.ttf into `modern/fonts/` (copy-only; no format conversion). |
+| `--verify` | SHA-256 checksums of keepers into `verification.json`. |
 | `--notify` | macOS notification when finished. |
-| `--verify` | SHA-256 checksums of keepers. |
 | `--no-clone` | Disable the default full unmodified copy. |
 | `--no-heuristics` | Skip image/QXD/font heuristics. |
 
-### Config file
-Copy `example.starmax.toml` to `~/.starmax.toml` (or `~/.starmax.conf`). Simple `key=value`:
+## Config file
+
+Copy `example.starmax.toml` to `~/.starmax.toml`. Simple `key=value`:
 
 ```toml
 preferred_device = "/dev/disk4s1s2"
@@ -89,6 +112,39 @@ font_threshold = 2
 notify = 1
 ```
 
+## Known limitations & recovery
+
+- **Drive flakiness**: Some USB optical drives (especially non-GP60) re-enumerate or show "Unsupported". Cycle the tray, unplug/replug, or switch drives. Prefer the GP60NB60 for old CDs.
+- **Font conversion**: Currently copy-only into `modern/fonts/`. Real suitcase → TTF/OTF conversion requires external tools (not included).
+- **Icon uprez**: No automatic conversion of custom OS 9 icons to modern high-res icons. `--strip-icons` removes them so Finder uses current system icons. Originals remain in the ISO / full-extract.
+- **Multi-session / multi-slice discs**: Image each slice separately with unique ISO names. Use `diskutil list` to identify slices.
+- **Partial rips**: If `dd` stalls, kill it (`sudo kill <pid>`), eject, reinsert, and retry with a new ISO name. The `.iso` is the master — re-extract from it if needed.
+- **Dependencies**: Extraction needs `impluse-hfs`. StuffIt needs `unar`. Better movie previews need `ffmpeg`.
+
+If a run fails halfway:
+1. Check `rescue.log` and `rescue.jsonl` in the archive folder.
+2. The `full-extract/` clone (if present) is a safe restart point.
+3. Re-run with `--go` on the same source; existing destinations are skipped.
+
+## Example walkthrough (GP60 drive)
+
+```bash
+# 1. Confirm media
+drutil -drive 1 status
+
+# 2. Rip a slice
+scripts/rip-old-mac-cd.sh --device /dev/disk4s1s2 "MyDisc-slice1" --slow
+
+# 3. Rescue with modern defaults
+scripts/rescue-cd.sh --src ~/Desktop/MyDisc-slice1 --name "MyDisc-slice1" --go \
+  --sanitize --export-modern --strip-icons --quick-view --notify
+
+# 4. Review
+open ~/Desktop/CD-Archive/MyDisc-slice1
+```
+
+Or just run the wizard and follow the prompts.
+
 ## One-click paths (Shortcuts and Automator)
 
 Both wrap the same CLI. Scripts stay the source of truth.
@@ -98,15 +154,10 @@ Both wrap the same CLI. Scripts stay the source of truth.
 2. Add **Ask for Input** (or **Select File** / folder) → name it `Source Folder`.
 3. Add **Run Shell Script**:
    ```bash
-   cd /Users/mattciaglia/Dev/Starmax
-   ./scripts/rescue-cd.sh --src "$1" --name "$(basename "$1")" --go --export-modern --notify
+   cd /path/to/Starmax
+   ./scripts/rescue-cd.sh --src "$1" --name "$(basename "$1")" --go --export-modern --strip-icons --quick-view --notify
    ```
    Pass input as arguments.
-4. Optional second Shortcut for rip:
-   ```bash
-   cd /Users/mattciaglia/Dev/Starmax
-   ./scripts/rip-old-mac-cd.sh "$1"
-   ```
 
 ### Automator Quick Action
 1. Open Automator → New Document → Quick Action.
@@ -115,33 +166,22 @@ Both wrap the same CLI. Scripts stay the source of truth.
 4. Shell: `/bin/bash`, Pass input: as arguments.
 5. Script:
    ```bash
-   cd /Users/mattciaglia/Dev/Starmax
+   cd /path/to/Starmax
    for f in "$@"; do
      name=$(basename "$f")
-     ./scripts/rescue-cd.sh --src "$f" --name "$name" --go --export-modern --notify
+     ./scripts/rescue-cd.sh --src "$f" --name "$name" --go --export-modern --strip-icons --quick-view --notify
    done
    ```
 6. Save as "Starmax Rescue".
 
 Right-click an extracted folder in Finder → Quick Actions → Starmax Rescue.
 
-## Phase status
-- [x] Clone by default (`--no-clone` to disable)
-- [x] Broader heuristics + keep-pattern config
-- [x] Batch dry-run and `--skip-processed`
-- [x] Device candidate listing (rip script)
-- [x] Sanitize (safe pre-pass)
-- [x] Plan mode (`--plan` → `plan.json`)
-- [x] Export modern (`--export-modern`)
-- [x] Structured logs (`rescue.jsonl`) + verification + types.json
-- [x] Notification hook (`--notify` or config)
-- [x] Modern TUI wizard (`scripts/starmax-wizard.py`)
-- [ ] One-button Mac app (optional; skeleton on `mac-app-skeleton`)
+## Batch (optional)
 
-## Prototype status (Oct 2026)
-- Starmax.CD.22: done
-- Starmax 4.Back-up: fully processed
-- Starmax 1: both slices imaged with GP60NB60, extracted, sorted (slice1 verified on harden-all)
+```bash
+scripts/batch-rescue.sh --only 'Starmax*' --skip-processed ~/Desktop/
+```
 
 ## License
+
 MIT.
