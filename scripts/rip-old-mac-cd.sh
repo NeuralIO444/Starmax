@@ -1,98 +1,143 @@
 #!/bin/bash
-# rip-old-mac-cd.sh — rescue an OS 9-era HFS CD to ~/Desktop
-# Usage:  rip-old-mac-cd.sh "My CD Name"
-#         (name is optional; defaults to OldMacCD-<timestamp>)
+# rip-old-mac-cd.sh — hardened HFS CD rip + extract (Phase 1)
+# Reliability, verification, logging, and expansion headroom.
 #
-# One-time setup (already done on 2026-10-10):
-#   - impluse-hfs built from https://github.com/boredzo/impluse-hfs
-#     and installed to /usr/local/bin/impluse-hfs
+# Usage: scripts/rip-old-mac-cd.sh [options] [name]
 #
-# What it does:
-#   1. Finds the Apple_HFS slice on the inserted CD (you click "Ignore"
-#      when macOS asks about the disc)
-#   2. dd's it to ~/cd-archive/<name>.iso  (the permanent archive — keep it)
-#   3. Extracts everything to ~/Desktop/<name>/ with impluse-hfs
-#      (falls back to folder-by-folder if one bad file kills the batch)
-set -u
+# Options:
+#   -d, --device DEV     Force HFS device (e.g. /dev/disk4s1s2)
+#   -o, --outdir DIR     Archive dir (default: ~/cd-archive)
+#   -n, --no-eject       Skip eject
+#   -v, --verbose        Verbose
+#   -h, --help           Help
+#
+# Name optional: auto from volume or OldMacCD-<timestamp>.
+# Keeps permanent ISO + .sha256. Extracts to ~/Desktop/<name>/.
+# Prefer ddrescue (brew install ddrescue) for scratched media.
 
-NAME="${1:-OldMacCD-$(date +%Y%m%d-%H%M)}"
-ARCHIVE_DIR="$HOME/cd-archive"
+set -euo pipefail
+
+ARCHIVE_DIR="${HOME}/cd-archive"
+LOG_DIR="${ARCHIVE_DIR}/logs"
+FORCE_DEV=""
+NO_EJECT=0
+VERBOSE=0
+NAME=""
+
+usage() { sed -n '2,22p' "$0" | sed 's/^# //'; exit 0; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -d|--device) FORCE_DEV="$2"; shift 2 ;;
+    -o|--outdir) ARCHIVE_DIR="$2"; shift 2 ;;
+    -n|--no-eject) NO_EJECT=1; shift ;;
+    -v|--verbose) VERBOSE=1; shift ;;
+    -h|--help) usage ;;
+    -*) echo "Unknown option: $1" >&2; exit 1 ;;
+    *) NAME="$1"; shift ;;
+  esac
+done
+
+mkdir -p "$ARCHIVE_DIR" "$LOG_DIR"
+TS=$(date +%Y%m%d-%H%M%S)
+LOG="$LOG_DIR/rip-$TS.log"
+exec > >(tee -a "$LOG") 2>&1
+echo "=== Starmax rip $TS ==="
+echo "Log: $LOG"
+
+command -v impluse-hfs >/dev/null 2>&1 || { echo "ERROR: impluse-hfs missing. See README."; exit 1; }
+
+# Device discovery
+if [[ -n "$FORCE_DEV" ]]; then
+  HFS_DEV="$FORCE_DEV"
+  CD_DISK=$(diskutil info "$HFS_DEV" 2>/dev/null | awk '/Part of Whole:/ {print $NF; exit}' || echo "unknown")
+  echo "Forced device: $HFS_DEV (whole: $CD_DISK)"
+else
+  mapfile -t CANDIDATES < <(diskutil list | awk '
+    /^\/dev\/ { d=$1; c=0 }
+    /CD_partition_scheme/ { c=1 }
+    c && /Apple_HFS/ { print d, "/dev/" $NF }
+    !c && /Apple_HFS/ { print d, "/dev/" $NF }
+  ' | awk '!seen[$2]++')
+  if [[ ${#CANDIDATES[@]} -eq 0 ]]; then
+    echo "No HFS found. Insert disc + Ignore prompt."
+    exit 1
+  fi
+  read -r CD_DISK HFS_DEV <<< "${CANDIDATES[0]}"
+  echo "Detected: $HFS_DEV (on $CD_DISK)"
+  [[ ${#CANDIDATES[@]} -gt 1 ]] && echo "Multiple candidates; use --device to override."
+fi
+
+[[ -z "$NAME" ]] && NAME="OldMacCD-$TS"
 ISO="$ARCHIVE_DIR/$NAME.iso"
 DEST="$HOME/Desktop/$NAME"
 
-command -v impluse-hfs >/dev/null 2>&1 || {
-  echo "impluse-hfs not found. Build it once:"
-  echo "  git clone https://github.com/boredzo/impluse-hfs.git ~/impluse-hfs"
-  echo "  cd ~/impluse-hfs && xcodebuild -project impluse-hfs.xcodeproj \\"
-  echo "    -scheme impluse-hfs -configuration Release build MACOSX_DEPLOYMENT_TARGET=12.0"
-  echo "  sudo cp <DerivedData>/Build/Products/Release/impluse-hfs /usr/local/bin/"
-  exit 1
-}
-
-# --- 1. locate the HFS slice on the CD -------------------------------------
-read -r CD_DISK HFS_DEV <<< "$(diskutil list | awk '/^\/dev\//{d=$1; c=0} /CD_partition_scheme/{c=1} c && /Apple_HFS/{print d, "/dev/" $NF; exit}')"
-if [ -z "${HFS_DEV:-}" ]; then
-  echo "No HFS CD found."
-  echo "Insert the disc, click 'Ignore' if macOS asks, and try again."
-  echo "(If it's a plain ISO-9660 CD it should just mount in Finder by itself.)"
-  exit 1
-fi
-echo "Found HFS volume: $HFS_DEV  (on $CD_DISK)"
-
-# --- 2. image it (the permanent archive) ------------------------------------
-mkdir -p "$ARCHIVE_DIR"
-echo "Imaging to $ISO — takes a few minutes, leave the drive alone..."
-sudo dd "if=$HFS_DEV" "of=$ISO" bs=2048
-sudo chown "$USER" "$ISO"
-echo "Archive saved: $ISO ($(du -h "$ISO" | cut -f1))"
-
-# --- 3. extract --------------------------------------------------------------
-mkdir -p "$DEST"
-cd "$DEST"
-echo "Extracting to $DEST ..."
-if impluse-hfs extract "$ISO" ':' 2>/tmp/impluse-err.txt; then
-  echo "Done — full volume extracted."
+echo "Imaging $HFS_DEV -> $ISO"
+if command -v ddrescue >/dev/null 2>&1; then
+  echo "Using ddrescue (retries enabled)"
+  MAP="$ARCHIVE_DIR/$NAME.ddrescue.map"
+  sudo ddrescue -d -r3 "$HFS_DEV" "$ISO" "$MAP" || echo "ddrescue completed with residual errors (map: $MAP)"
 else
-  echo "Whole-volume extract hit a bad file; falling back to folder-by-folder..."
-  tail -3 /tmp/impluse-err.txt
-  python3 - "$ISO" "$DEST" <<'PYEOF'
-import subprocess, sys, os, re
-iso, dest = sys.argv[1], sys.argv[2]
-out = subprocess.run(['impluse-hfs', 'list', iso],
-                     capture_output=True, text=True).stdout
+  echo "WARNING: ddrescue not found (brew install ddrescue). Using plain dd."
+  sudo dd if="$HFS_DEV" of="$ISO" bs=2048 status=progress || { echo "dd failed"; exit 1; }
+fi
+sudo chown "$USER:$(id -gn)" "$ISO" 2>/dev/null || sudo chown "$USER" "$ISO"
+
+echo "SHA-256..."
+SHA=$(shasum -a 256 "$ISO" | awk '{print $1}')
+echo "$SHA  $NAME.iso" > "$ISO.sha256"
+echo "SHA-256: $SHA"
+
+# Auto volume name
+if [[ "$NAME" == OldMacCD-* ]]; then
+  VOL=$(impluse-hfs list "$ISO" 2>/dev/null | awk -F' contains ' '/^\ud83d\udcbf / { gsub(/^\ud83d\udcbf /, "", $1); print $1; exit }' || true)
+  if [[ -n "$VOL" ]]; then
+    SAFE=$(printf '%s' "$VOL" | tr -cd '[:alnum:] ._-')
+    if [[ -n "$SAFE" && ! -e "$ARCHIVE_DIR/$SAFE.iso" ]]; then
+      mv "$ISO" "$ARCHIVE_DIR/$SAFE.iso"
+      mv "$ISO.sha256" "$ARCHIVE_DIR/$SAFE.iso.sha256" 2>/dev/null || true
+      ISO="$ARCHIVE_DIR/$SAFE.iso"
+      DEST="$HOME/Desktop/$SAFE"
+      NAME="$SAFE"
+      echo "Auto-named from volume: $NAME"
+    fi
+  fi
+fi
+
+mkdir -p "$DEST"
+echo "Extracting to $DEST"
+ERR="$LOG_DIR/extract-$TS.err"
+if impluse-hfs extract "$ISO" ':' >"$ERR" 2>&1; then
+  echo "Full extract OK."
+else
+  echo "Full extract failed; resilient fallback."
+  python3 - "$ISO" "$DEST" "$ERR" <<'PY'
+import subprocess, sys, os, re, json
+iso, dest, err = sys.argv[1:4]
+out = subprocess.run(['impluse-hfs','list',iso], capture_output=True, text=True).stdout
 vol, items, seen = None, [], set()
 for line in out.splitlines():
-    m = re.match(r'^💿 (.+) contains \d+ items$', line)
-    if m:
-        vol = m.group(1)
-        continue
-    if vol and re.match(r'^ [📁📄] ', line):
-        name = line[3:]
-        if ' contains ' in name:
-            name = name.split(' contains ')[0]
-        else:
-            name = name.split('\t')[0]
-        if name not in seen:
-            seen.add(name)
-            items.append(name)
-os.chdir(dest)
-ok, bad = 0, []
+    m = re.match(r'^\ud83d\udcbf (.+) contains \d+ items$', line)
+    if m: vol = m.group(1); continue
+    if vol and re.match(r'^ [\ud83d\udcc1\ud83d\udcc4] ', line):
+        name = line[3:].split('\t')[0].split(' contains ')[0].strip()
+        if name and name not in seen: seen.add(name); items.append(name)
+if not items: sys.exit(1)
+os.makedirs(dest, exist_ok=True); os.chdir(dest)
+ok=bad=0; fails=[]
 for name in items:
-    r = subprocess.run(['impluse-hfs', 'extract', iso, f"{vol}:{name}"],
-                       capture_output=True, text=True)
-    if r.returncode == 0 or 'already exists' in (r.stdout + r.stderr):
-        ok += 1
-    else:
-        bad.append(name)
-print(f"Top-level items extracted: {ok}/{len(items)}")
-if bad:
-    print("These need manual attention (bad filenames on the disc):")
-    for b in bad:
-        print(f"  - {b}")
-PYEOF
+    r = subprocess.run(['impluse-hfs','extract',iso,f'{vol}:{name}'], capture_output=True, text=True)
+    if r.returncode==0 or 'already exists' in (r.stdout+r.stderr): ok+=1
+    else: bad+=1; fails.append({'name':name,'err':r.stderr[:300]}); print(f'FAIL: {name}')
+print(f'{ok}/{len(items)} top-level OK')
+if fails:
+    with open(err+'.json','w') as f: json.dump(fails,f,indent=2)
+    print('Failures:', err+'.json')
+PY
 fi
 
-echo "Files in $DEST: $(find "$DEST" -type f | wc -l | tr -d ' ')"
-echo "Archive kept at: $ISO"
-diskutil eject "$CD_DISK" 2>/dev/null || true
-echo "CD ejected. Done."
+echo "Files extracted: $(find "$DEST" -type f 2>/dev/null | wc -l | tr -d ' ')"
+echo "ISO: $ISO"
+echo "SHA: $SHA"
+[[ $NO_EJECT -eq 0 ]] && diskutil eject "$CD_DISK" 2>/dev/null || true
+echo "=== Complete. Log: $LOG ==="
