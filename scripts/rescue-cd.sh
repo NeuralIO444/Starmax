@@ -1,5 +1,5 @@
 #!/bin/bash
-# rescue-cd.sh — engineering pass
+# rescue-cd.sh — engineering pass + quick-view
 # Clone ON by default. macOS bash 3.2 compatible.
 #
 # Usage: scripts/rescue-cd.sh [options] [src] [name]
@@ -8,6 +8,7 @@
 #   --go --plan --no-clone --sanitize --export-modern --notify
 #   --verify          SHA-256 every keepers file into verification.json
 #   --convert-fonts   copy font files into modern/fonts (stub)
+#   --quick-view      generate PNG previews for PICT and poster frames for .mov
 #   --no-heuristics
 # Config: ~/.starmax.toml or ~/.starmax.conf
 
@@ -26,13 +27,14 @@ EXPORT_MODERN=0
 CONVERT_PICT=0
 EXTRACT_SIT=0
 CONVERT_FONTS=0
+QUICK_VIEW=0
 HEURISTICS=1
 VERIFY=0
 NOTIFY=${STARMAX_NOTIFY:-0}
 EXTRA_KEEP=""
 EXTRA_JUNK=""
 
-usage() { sed -n '2,18p' "$0" | sed 's/^# //'; exit 0; }
+usage() { sed -n '2,20p' "$0" | sed 's/^# //'; exit 0; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -44,6 +46,7 @@ while [[ $# -gt 0 ]]; do
     --convert-pict) CONVERT_PICT=1; shift ;;
     --extract-sit) EXTRACT_SIT=1; shift ;;
     --convert-fonts) CONVERT_FONTS=1; shift ;;
+    --quick-view) QUICK_VIEW=1; shift ;;
     --no-heuristics) HEURISTICS=0; shift ;;
     --verify) VERIFY=1; shift ;;
     --notify) NOTIFY=1; shift ;;
@@ -71,6 +74,7 @@ JUNK="$DEST/_junk"
 REVIEW="$DEST/_review"
 CLONE_DEST="$DEST/full-extract"
 MODERN="$DEST/modern"
+PREVIEWS="$DEST/modern/previews"
 LOG="$DEST/rescue.log"
 STATE="$DEST/state.json"
 PLAN_FILE="$DEST/plan.json"
@@ -109,10 +113,8 @@ classify_item() {
     images=$(find "$SRC/$base" -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.pict' -o -iname '*.pct' -o -iname '*.tiff' -o -iname '*.tif' -o -iname '*.gif' \) 2>/dev/null | wc -l | tr -d ' ')
   fi
   local action="review" reason="default"
-  # patterns
   local matched=0
   for pat in "${KEEP_PATTERNS[@]:-}"; do
-    # shellcheck disable=SC2254
     case "$base" in $pat) action="keepers"; reason="pattern:$pat"; matched=1; break ;; esac
   done
   if [[ $matched -eq 0 && $HEURISTICS -eq 1 ]]; then
@@ -121,7 +123,6 @@ classify_item() {
       reason="qxd=$qxd fonts=$fonts images=$images"
     fi
   fi
-  # explicit junk
   for j in "${junk_names[@]:-}"; do
     [[ "$base" == "$j" ]] && action="_junk" && reason="explicit junk" && break
   done
@@ -130,7 +131,6 @@ classify_item() {
   echo "$action|$reason"
 }
 
-# Load patterns / junk early (needed for plan)
 KEEP_PATTERNS=()
 IFS=',' read -ra pats <<< "${STARMAX_KEEP_PATTERNS:-},${EXTRA_KEEP:-}"
 for p in "${pats[@]}"; do [[ -n "$p" ]] && KEEP_PATTERNS+=("$p"); done
@@ -144,19 +144,6 @@ for x in "${ej[@]}"; do [[ -n "$x" ]] && junk_names+=("$x"); done
 
 # --- Accurate plan mode ---
 if [[ $PLAN -eq 1 ]]; then
-  python3 - "$SRC" "$PLAN_FILE" "$NAME" <<'PY'
-import sys, json, time, subprocess, os
-src, out, name = sys.argv[1:4]
-plan = {"name": name, "generated": int(time.time()), "actions": []}
-for entry in os.listdir(src):
-    if entry.startswith('.') or entry in ("keepers","_junk","_review","full-extract","modern"): continue
-    # call bash classify via env for simplicity; here we reimplement lightly
-    plan["actions"].append({"item": entry, "action": "review", "reason": "see live run for exact"})
-with open(out,"w") as f: json.dump(plan, f, indent=2)
-print(f"Plan written (sketch; live uses full classify): {out}")
-PY
-  # Better: emit real plan from bash
-  : > "$PLAN_FILE.tmp"
   echo "{" > "$PLAN_FILE"
   echo "  \"name\": \"$NAME\"," >> "$PLAN_FILE"
   echo "  \"generated\": $(date +%s)," >> "$PLAN_FILE"
@@ -222,7 +209,7 @@ do_move() {
   return 0
 }
 
-# Classification using shared function
+# Classification
 while IFS= read -r -d '' entry; do
   base=$(basename "$entry")
   [[ "$base" == keepers || "$base" == _junk || "$base" == _review || "$base" == full-extract || "$base" == modern ]] && continue
@@ -240,7 +227,7 @@ done < <(find "$SRC" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
 
 mkdir -p "$KEEP"
 
-# Resource-fork / AppleDouble report
+# Resource-fork report
 log_json info "resource-fork scan"
 python3 - "$KEEP" "$RESOURCE_JSON" <<'PY' || true
 import os, sys, json
@@ -292,6 +279,29 @@ if [[ $EXPORT_MODERN -eq 1 ]]; then
   log_json info "modern export done"
 fi
 
+# Quick-view: PICT → PNG and .mov poster frames
+if [[ $QUICK_VIEW -eq 1 || $CONVERT_PICT -eq 1 ]]; then
+  log_json info "quick-view start"
+  mkdir -p "$PREVIEWS"
+  # PICT / PCT → PNG via sips
+  find "$KEEP" -type f \( -iname '*.pict' -o -iname '*.pct' \) -print0 2>/dev/null | while IFS= read -r -d '' f; do
+    base=$(basename "$f")
+    safe=$(printf '%s' "$base" | sed 's/[^[:alnum:]._-]/_/g; s/\.[^.]*$//' | cut -c1-140)
+    sips -s format png "$f" --out "$PREVIEWS/${safe}.png" >/dev/null 2>&1 && log_json info "preview pict $base" || true
+  done
+  # .mov poster frame (ffmpeg preferred, fallback sips)
+  find "$KEEP" -type f -iname '*.mov' -print0 2>/dev/null | while IFS= read -r -d '' f; do
+    base=$(basename "$f")
+    safe=$(printf '%s' "$base" | sed 's/[^[:alnum:]._-]/_/g; s/\.[^.]*$//' | cut -c1-140)
+    if command -v ffmpeg >/dev/null 2>&1; then
+      ffmpeg -y -i "$f" -ss 00:00:01 -vframes 1 -q:v 2 "$PREVIEWS/${safe}.jpg" >/dev/null 2>&1 && log_json info "preview mov $base" || true
+    else
+      sips -s format jpeg "$f" --out "$PREVIEWS/${safe}.jpg" >/dev/null 2>&1 && log_json info "preview mov (sips) $base" || true
+    fi
+  done
+  log_json info "quick-view done"
+fi
+
 # Font inventory
 log_json info "font inventory"
 python3 - "$KEEP" "$MODERN" "$FONTS_JSON" "$FONTS_MD" <<'PY' || true
@@ -325,7 +335,7 @@ if [[ $CONVERT_FONTS -eq 1 ]]; then
   log_json info "fonts copied to modern/fonts (no format conversion)"
 fi
 
-# Verification + optional checksums
+# Verification
 SRC_COUNT=$(find "$SRC" -type f 2>/dev/null | wc -l | tr -d ' ')
 KEEP_COUNT=$(find "$KEEP" -type f 2>/dev/null | wc -l | tr -d ' ')
 CLONE_COUNT=0
@@ -363,7 +373,6 @@ PY
 fi
 log_json info "verification source=$SRC_COUNT keepers=$KEEP_COUNT clone=$CLONE_COUNT"
 
-# State
 python3 - "$STATE" <<'PY'
 import json, time, sys
 with open(sys.argv[1], "w") as f:
@@ -379,6 +388,7 @@ echo "=== Done ==="
 echo "Keepers: $KEEP"
 [[ $CLONE -eq 1 ]] && echo "Full extract: $CLONE_DEST"
 [[ $EXPORT_MODERN -eq 1 ]] && echo "Modern: $MODERN"
+[[ $QUICK_VIEW -eq 1 || $CONVERT_PICT -eq 1 ]] && echo "Previews: $PREVIEWS"
 echo "Fonts: $FONTS_MD"
 echo "Reports: $VERIFY_FILE $DEST/types.json $RESOURCE_JSON"
 echo "Next: review _review/ and trash _junk/. ISO is master."
