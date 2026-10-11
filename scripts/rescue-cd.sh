@@ -1,13 +1,14 @@
 #!/bin/bash
-# rescue-cd.sh — Phase 2 + clone mode
-# Heuristics on by default (evaluated in dry-run too). PICT side-by-side. .sit extract. MD+JSON reports.
-# --clone does a full unmodified copy of the extract first (nothing moved).
+# rescue-cd.sh — Phase 2 + clone-by-default
+# Clone is ON by default (full unmodified copy first). Sorting is a second pass.
+# Heuristics on by default (evaluated in dry-run too). Broader: QXD, fonts, images.
 #
 # Usage: scripts/rescue-cd.sh [options] [src-dir] [name]
 #
 # Options:
 #   --go                 Live mode (default dry-run)
-#   --clone              Full unmodified copy of source into DEST/full-extract/ (then optional sort)
+#   --clone              Explicit clone (default ON)
+#   --no-clone           Disable the full unmodified copy
 #   -s, --src DIR        Source extracted folder
 #   -n, --name NAME      Disc name
 #   -o, --outdir DIR     Output base (default: ~/Desktop/CD-Archive)
@@ -15,13 +16,16 @@
 #   --junk LIST          Extra junk names (comma)
 #   --convert-pict       Side-by-side PICT/PCT → PNG via sips
 #   --extract-sit        Extract .sit/.sitx with unar (if present)
+#   --convert-fonts      Stub: print FontForge commands if present
+#   --sanitize           Basic rename of problematic old-Mac names before processing
 #   --manifest           Write keepers.manifest.json (default on with --go)
 #   --no-heuristics      Disable recursive content heuristics
 #   -v, --verbose
 #   -h, --help
 #
 # NOTHING is deleted. Junk goes to _junk/; you trash it in Finder after review.
-# With --clone the original extract layout is preserved under full-extract/.
+# With clone (default) the original extract layout is preserved under full-extract/.
+# Keep patterns: STARMAX_KEEP_PATTERNS env (comma globs) or ~/.starmax-keep (one glob per line).
 
 set -euo pipefail
 
@@ -29,21 +33,24 @@ SRC=""
 NAME=""
 OUTBASE="$HOME/Desktop/CD-Archive"
 GO=0
-CLONE=0
+CLONE=1
 VERBOSE=0
 CONVERT_PICT=0
 EXTRACT_SIT=0
+CONVERT_FONTS=0
+SANITIZE=0
 DO_MANIFEST=1
 HEURISTICS=1
 EXTRA_KEEP=""
 EXTRA_JUNK=""
 
-usage() { sed -n '2,25p' "$0" | sed 's/^# //'; exit 0; }
+usage() { sed -n '2,32p' "$0" | sed 's/^# //'; exit 0; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --go) GO=1; shift ;;
     --clone) CLONE=1; shift ;;
+    --no-clone) CLONE=0; shift ;;
     -s|--src) SRC="$2"; shift 2 ;;
     -n|--name) NAME="$2"; shift 2 ;;
     -o|--outdir) OUTBASE="$2"; shift 2 ;;
@@ -51,6 +58,8 @@ while [[ $# -gt 0 ]]; do
     --junk) EXTRA_JUNK="$2"; shift 2 ;;
     --convert-pict) CONVERT_PICT=1; shift ;;
     --extract-sit) EXTRACT_SIT=1; shift ;;
+    --convert-fonts) CONVERT_FONTS=1; shift ;;
+    --sanitize) SANITIZE=1; shift ;;
     --manifest) DO_MANIFEST=1; shift ;;
     --no-heuristics) HEURISTICS=0; shift ;;
     -v|--verbose) VERBOSE=1; shift ;;
@@ -82,10 +91,25 @@ echo "=== Starmax rescue: $NAME ==="
 echo "Source: $SRC"
 echo "Dest:   $DEST"
 echo "Mode:   $([[ $GO -eq 1 ]] && echo LIVE || echo DRY-RUN)"
-echo "Clone:   $([[ $CLONE -eq 1 ]] && echo ON || echo OFF)"
+echo "Clone:   $([[ $CLONE -eq 1 ]] && echo ON (default) || echo OFF)"
 echo "Heuristics: $([[ $HEURISTICS -eq 1 ]] && echo ON || echo OFF)"
+echo "Sanitize: $([[ $SANITIZE -eq 1 ]] && echo ON || echo OFF)"
 
-# --- Clone mode (full unmodified copy) ---
+# --- Optional sanitize (rename problematic names in source before clone/sort) ---
+if [[ $SANITIZE -eq 1 && $GO -eq 1 ]]; then
+  echo
+  echo "--- sanitize ---"
+  find "$SRC" -depth -print0 2>/dev/null | while IFS= read -r -d '' p; do
+    base=$(basename "$p")
+    dir=$(dirname "$p")
+    safe=$(printf '%s' "$base" | sed 's/[:\n\r]/_/g; s/^[[:space:]]*//; s/[[:space:]]*$//; s/Icon\n/Icon_/g' | cut -c1-200)
+    [[ "$base" == "$safe" ]] && continue
+    [[ -z "$safe" ]] && safe="unnamed-$(date +%s)"
+    mv -n "$p" "$dir/$safe" 2>/dev/null && echo "  sanitized: $base → $safe" || true
+  done || true
+fi
+
+# --- Clone mode (full unmodified copy) — default ON ---
 if [[ $CLONE -eq 1 ]]; then
   echo
   echo "--- clone (full unmodified copy) ---"
@@ -110,6 +134,16 @@ IFS=',' read -ra ek <<< "${STARMAX_KEEP:-},${EXTRA_KEEP:-}"
 IFS=',' read -ra ej <<< "${STARMAX_JUNK:-},${EXTRA_JUNK:-}"
 for x in "${ek[@]}"; do [[ -n "$x" ]] && keep_names+=("$x"); done
 for x in "${ej[@]}"; do [[ -n "$x" ]] && junk_names+=("$x"); done
+
+# Load keep patterns
+KEEP_PATTERNS=()
+if [[ -f "$HOME/.starmax-keep" ]]; then
+  while IFS= read -r line; do
+    [[ -n "$line" && ! "$line" =~ ^# ]] && KEEP_PATTERNS+=("$line")
+  done < "$HOME/.starmax-keep"
+fi
+IFS=',' read -ra env_pats <<< "${STARMAX_KEEP_PATTERNS:-}"
+for p in "${env_pats[@]}"; do [[ -n "$p" ]] && KEEP_PATTERNS+=("$p"); done
 
 do_move() {
   local item="$1" dest="$2"
@@ -137,12 +171,22 @@ for i in "${review_names[@]}"; do do_move "$i" "$REVIEW"; done
 while IFS= read -r -d '' entry; do
   base=$(basename "$entry")
   [[ "$base" == keepers || "$base" == _junk || "$base" == _review || "$base" == full-extract ]] && continue
+
+  # Pattern match
+  for pat in "${KEEP_PATTERNS[@]}"; do
+    # shellcheck disable=SC2254
+    case "$base" in
+      $pat) do_move "$base" "$KEEP"; echo "  pattern → keepers: $base"; continue 2 ;;
+    esac
+  done
+
   if [[ $HEURISTICS -eq 1 ]]; then
     qxd=$(find "$SRC/$base" -type f -iname '*.qxd' 2>/dev/null | wc -l | tr -d ' ')
     fonts=$(find "$SRC/$base" -type f \( -iname '*.suit' -o -iname '*.dfont' -o -iname '*.bmap' -o -iname '*.ttf' \) 2>/dev/null | wc -l | tr -d ' ')
-    if [[ "$qxd" -ge 1 || "$fonts" -ge 2 ]]; then
+    images=$(find "$SRC/$base" -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.pict' -o -iname '*.pct' -o -iname '*.tiff' -o -iname '*.tif' -o -iname '*.gif' \) 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$qxd" -ge 1 || "$fonts" -ge 2 || "$images" -ge 5 ]]; then
       do_move "$base" "$KEEP"
-      echo "  heuristic → keepers: $base (qxd=$qxd fonts=$fonts)"
+      echo "  heuristic → keepers: $base (qxd=$qxd fonts=$fonts images=$images)"
       continue
     fi
   fi
@@ -151,7 +195,7 @@ done < <(find "$SRC" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
 
 if [[ $GO -eq 0 ]]; then
   echo
-  echo "Dry-run complete. Re-run with --go (and optional --clone --convert-pict --extract-sit)."
+  echo "Dry-run complete. Re-run with --go."
   exit 0
 fi
 
@@ -189,6 +233,18 @@ if [[ $EXTRACT_SIT -eq 1 ]]; then
         unar -quiet -output-directory "$outdir" "$f" && echo "  extracted: $base → unarchived/" || echo "  failed: $f"
       fi
     done || true
+  fi
+fi
+
+# --- Font conversion stub ---
+if [[ $CONVERT_FONTS -eq 1 ]]; then
+  echo
+  echo "--- font conversion stub ---"
+  if command -v fontforge >/dev/null 2>&1; then
+    echo "  fontforge is installed. Example for a suitcase:"
+    echo "    fontforge -c 'Open(\"$KEEP/some.suit\"); Generate(\"$KEEP/some.ttf\")'"
+  else
+    echo "  fontforge not found (brew install fontforge). Detection only."
   fi
 fi
 
@@ -247,7 +303,7 @@ PY
   find "$KEEP" -type f \( -iname '*.sit' -o -iname '*.sitx' \) 2>/dev/null | sed "s|$KEEP/||" || true
   echo ""
   echo "## Modernize checklist"
-  echo "- [ ] Fonts: suitcases/.bmap → FontForge / TTF (detection only in this phase)"
+  echo "- [ ] Fonts: suitcases/.bmap → FontForge / TTF (use --convert-fonts for stub commands)"
   echo "- [ ] .qxd → open in InDesign (File → Open). Install recovered TTFs first."
   echo "- [ ] PICT originals kept; PNGs side-by-side if --convert-pict was used"
   echo "- [ ] Review _review/ and trash _junk/ in Finder"
@@ -288,6 +344,15 @@ with open(out, "w") as f:
 print(f"Manifest: {len(entries)} files → {out}")
 PY
 fi
+
+# --- Simple verification ---
+echo
+echo "--- verification ---"
+SRC_COUNT=$(find "$SRC" -type f 2>/dev/null | wc -l | tr -d ' ')
+KEEP_COUNT=$(find "$KEEP" -type f 2>/dev/null | wc -l | tr -d ' ')
+echo "  Source files: $SRC_COUNT"
+echo "  Keepers files: $KEEP_COUNT"
+[[ $CLONE -eq 1 && -d "$CLONE_DEST" ]] && echo "  Full-extract files: $(find "$CLONE_DEST" -type f 2>/dev/null | wc -l | tr -d ' ')"
 
 # --- Archive ---
 echo

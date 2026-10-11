@@ -5,7 +5,7 @@
 # Usage: scripts/rip-old-mac-cd.sh [options] [name]
 #
 # Options:
-#   -d, --device DEV     Force HFS device (e.g. /dev/disk4s1s2). Strongly preferred when auto-detect is ambiguous.
+#   -d, --device DEV     Force HFS device (e.g. /dev/disk4s1s2). Happy path when multiple candidates.
 #   -o, --outdir DIR     Archive dir (default: ~/cd-archive)
 #   -n, --no-eject       Skip eject
 #   --slow               More conservative ddrescue (extra retries, lower speed) for aged CDs
@@ -15,7 +15,7 @@
 # Name optional (auto from volume or OldMacCD-<timestamp>). Must be unique — refuses to overwrite an existing ISO.
 # Permanent ISO + .sha256 kept. Extracts to ~/Desktop/<name>/.
 # Prefer the GP60NB60. Always confirm media with: drutil -drive 1 status
-# Auto-detect is fragile; use --device when multiple slices or drives are present.
+# If multiple candidates, they are listed numbered and the script exits so you can re-run with --device.
 
 set -euo pipefail
 
@@ -49,11 +49,11 @@ exec > >(tee -a "$LOG") 2>&1
 echo "=== Starmax rip $TS ==="
 echo "Log: $LOG"
 echo "Tip: prefer the GP60NB60. Run 'drutil -drive 1 status' to confirm media before imaging."
-echo "Auto-detect is fragile — use --device /dev/diskXsY when unsure."
+echo "Use --device when multiple candidates appear."
 
 command -v impluse-hfs >/dev/null 2>&1 || { echo "ERROR: impluse-hfs missing. See README."; exit 1; }
 
-# Device discovery (manual override preferred when multiple optical drives or nested slices)
+# Device discovery
 if [[ -n "$FORCE_DEV" ]]; then
   HFS_DEV="$FORCE_DEV"
   CD_DISK=$(diskutil info "$HFS_DEV" 2>/dev/null | awk '/Part of Whole:/ {print $NF; exit}' || echo "unknown")
@@ -73,15 +73,23 @@ else
     echo "4. Re-run with --device /dev/diskXsY"
     exit 1
   fi
+  if [[ ${#CANDIDATES[@]} -gt 1 ]]; then
+    echo "Multiple HFS candidates found. Re-run with --device:"
+    i=1
+    for c in "${CANDIDATES[@]}"; do
+      echo "  $i) $c"
+      ((i++))
+    done
+    echo "Example: scripts/rip-old-mac-cd.sh --device /dev/disk4s1s2 \"My Disc\""
+    exit 1
+  fi
   read -r CD_DISK HFS_DEV <<< "${CANDIDATES[0]}"
   echo "Detected: $HFS_DEV (on $CD_DISK)"
-  [[ ${#CANDIDATES[@]} -gt 1 ]] && echo "Multiple candidates — strongly prefer --device (GP60NB60 recommended)."
 fi
 
 [[ -z "$NAME" ]] && NAME="OldMacCD-$TS"
 ISO="$ARCHIVE_DIR/$NAME.iso"
 
-# Unique name enforcement (prototype lesson)
 if [[ -e "$ISO" ]]; then
   echo "ERROR: $ISO already exists. Use a unique descriptive name."
   exit 1
@@ -107,7 +115,6 @@ SHA=$(shasum -a 256 "$ISO" | awk '{print $1}')
 echo "$SHA  $NAME.iso" > "$ISO.sha256"
 echo "SHA-256: $SHA"
 
-# Auto volume name (only if still default and no collision)
 if [[ "$NAME" == OldMacCD-* ]]; then
   VOL=$(impluse-hfs list "$ISO" 2>/dev/null | awk -F' contains ' '/^\ud83d\udcbf / { gsub(/^\ud83d\udcbf /, "", $1); print $1; exit }' || true)
   if [[ -n "$VOL" ]]; then
