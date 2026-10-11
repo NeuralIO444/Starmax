@@ -6,7 +6,7 @@ CLI-first. Current path is `harden-all` (includes Phase 1–3 + features-next + 
 
 ## First-run setup
 ```bash
-cd /path/to/Starmax
+cd /Users/mattciaglia/Dev/Starmax
 chmod +x scripts/*.sh
 # Optional config
 cp example.starmax.toml ~/.starmax.toml
